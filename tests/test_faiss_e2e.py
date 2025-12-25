@@ -1,12 +1,12 @@
 """End-to-end tests comparing with FAISS."""
 
-import pytest
 import numpy as np
+import pytest
 import torch
 
 faiss = pytest.importorskip("faiss")
 
-from torch_similarity_search import from_faiss, IVFFlatIndex
+from torch_similarity_search import from_faiss  # noqa: E402
 
 
 class TestFAISSE2E:
@@ -55,9 +55,9 @@ class TestFAISSE2E:
             # Allow for -1 padding
             faiss_set.discard(-1)
             torch_set.discard(-1)
-            assert (
-                faiss_set == torch_set
-            ), f"Query {i}: FAISS {faiss_set} != PyTorch {torch_set}"
+            assert faiss_set == torch_set, (
+                f"Query {i}: FAISS {faiss_set} != PyTorch {torch_set}"
+            )
 
         # Distances should be very close
         np.testing.assert_allclose(
@@ -216,8 +216,8 @@ class TestFAISSE2E:
 
     def test_save_load(self):
         """Test saving and loading the PyTorch index via TorchScript."""
-        import tempfile
         import os
+        import tempfile
 
         np.random.seed(42)
         dim = 32
