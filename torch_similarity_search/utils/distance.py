@@ -57,9 +57,9 @@ class DistanceModule(nn.Module):
             ).squeeze(1)
             return q_norm_sq + v_norm_sq - 2 * qv_dot
         else:
-            return -torch.bmm(
-                queries.unsqueeze(1), candidates.transpose(1, 2)
-            ).squeeze(1)
+            return -torch.bmm(queries.unsqueeze(1), candidates.transpose(1, 2)).squeeze(
+                1
+            )
 
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
         """Alias for pairwise distance (nn.Module interface)."""

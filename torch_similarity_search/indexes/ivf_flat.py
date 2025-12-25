@@ -113,9 +113,7 @@ class IVFFlatIndex(BaseIndex):
                 f"Training vectors dimension {dim} does not match index dimension {self._dim}"
             )
         if n < self._nlist:
-            raise ValueError(
-                f"Need at least {self._nlist} vectors to train, got {n}"
-            )
+            raise ValueError(f"Need at least {self._nlist} vectors to train, got {n}")
 
         # Simple k-means initialization: random selection
         perm = torch.randperm(n, device=vectors.device)[: self._nlist]

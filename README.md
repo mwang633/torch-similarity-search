@@ -1,15 +1,19 @@
 # torch-similarity-search
 
-PyTorch-native similarity search library. Convert trained FAISS indexes to pure `nn.Module` models for GPU inference.
+[![PyPI version](https://badge.fury.io/py/torch-similarity-search.svg)](https://pypi.org/project/torch-similarity-search/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Train with FAISS, serve with PyTorch.**
+PyTorch-native similarity search. Convert trained FAISS indexes to pure `nn.Module` models for GPU inference.
+
+**Train with FAISS, deploy with PyTorch.**
 
 ## Why?
 
-- **No numpy overhead** - FAISS requires numpy conversion; this keeps tensors on GPU
-- **TorchScript/ONNX export** - Unified inference stack without FAISS dependency
-- **GPU memory sharing** - Vectors stay in GPU memory alongside embedding models
-- **Production ready** - No FAISS required in deployment containers
+- **No numpy overhead** - FAISS requires numpy conversion; this library keeps tensors on GPU
+- **TorchScript export** - Deploy without FAISS dependency, load with just `torch.jit.load()`
+- **GPU memory sharing** - Index vectors stay in GPU memory alongside your embedding model
+- **Triton Inference Server ready** - Export once, serve anywhere
 
 ## Installation
 
@@ -17,12 +21,19 @@ PyTorch-native similarity search library. Convert trained FAISS indexes to pure 
 pip install torch-similarity-search
 ```
 
+For FAISS conversion support:
+
+```bash
+pip install torch-similarity-search faiss-cpu  # or faiss-gpu
+```
+
 ## Quick Start
 
-### From FAISS
+### Convert from FAISS
 
 ```python
 import faiss
+import torch
 import torch_similarity_search as tss
 
 # Train with FAISS (your existing workflow)
@@ -36,76 +47,125 @@ model = tss.from_faiss(index)
 model = model.cuda()
 model.nprobe = 10
 
-# Search with PyTorch tensors
-queries = torch.randn(32, 128).cuda()
+# Search with PyTorch tensors (no numpy!)
+queries = torch.randn(32, 128, device="cuda")
 distances, indices = model.search(queries, k=10)
 ```
 
-### From Scratch
+### Build from Scratch
 
 ```python
 import torch
-import torch_similarity_search as tss
+from torch_similarity_search import IVFFlatIndex
 
-# Create and train index
-index = tss.IVFFlatIndex(dim=128, nlist=100, metric="l2")
-index.train(vectors)
-index.add(vectors)
+# Create and train
+index = IVFFlatIndex(dim=128, nlist=100, metric="l2")
+training_vectors = torch.randn(10000, 128)
+index.train(training_vectors)
+index.add(training_vectors)
+
+# Move to GPU
+index = index.cuda()
 
 # Search
+queries = torch.randn(32, 128, device="cuda")
 distances, indices = index.search(queries, k=10)
 ```
 
-### Export to TorchScript
+### Export for Production
 
 ```python
-# Export for deployment (no torch_similarity_search needed to load)
+# Export to TorchScript (no torch_similarity_search needed to load!)
 scripted = torch.jit.script(model)
 scripted.save("index.pt")
 
-# Load anywhere
+# Load anywhere - just needs PyTorch
 model = torch.jit.load("index.pt")
+model = model.cuda()
 distances, indices = model.search(queries, k=10)
+```
+
+### Use with Embedding Models
+
+```python
+# End-to-end GPU inference
+class SearchModel(torch.nn.Module):
+    def __init__(self, encoder, index):
+        super().__init__()
+        self.encoder = encoder
+        self.index = index
+
+    def forward(self, text_embeddings):
+        # Everything stays on GPU
+        return self.index.search(text_embeddings, k=10)
+
+# Export the complete pipeline
+model = SearchModel(encoder, index)
+torch.jit.script(model).save("search_pipeline.pt")
 ```
 
 ## Supported Index Types
 
 | FAISS Index | PyTorch Module | Status |
 |-------------|----------------|--------|
-| `IndexIVFFlat` | `IVFFlatIndex` | Supported |
+| `IndexIVFFlat` | `IVFFlatIndex` | ✅ Supported |
 | `IndexIVFPQ` | `IVFPQIndex` | Planned |
+| `IndexFlat` | `FlatIndex` | Planned |
 
-## API
+## API Reference
 
 ### `IVFFlatIndex`
 
+Inverted File Flat index - partitions vectors into clusters for fast approximate search.
+
 ```python
-IVFFlatIndex(
-    dim: int,           # Vector dimensionality
-    nlist: int,         # Number of clusters
-    metric: str = "l2", # "l2" or "ip" (inner product)
-    nprobe: int = 1,    # Clusters to search (accuracy vs speed)
+from torch_similarity_search import IVFFlatIndex
+
+index = IVFFlatIndex(
+    dim=128,          # Vector dimensionality
+    nlist=100,        # Number of clusters (higher = faster but less accurate)
+    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    nprobe=10,        # Clusters to search at query time
+    k=10,             # Default k for forward() method
 )
 ```
 
 **Methods:**
-- `train(vectors)` - Train centroids via k-means
-- `add(vectors)` - Add vectors to the index
-- `search(queries, k)` - Find k nearest neighbors
+
+| Method | Description |
+|--------|-------------|
+| `train(vectors)` | Train cluster centroids via k-means. Requires `(n, dim)` tensor with `n >= nlist`. |
+| `add(vectors)` | Add vectors to index. Accepts `(n, dim)` or `(dim,)` tensors. |
+| `search(queries, k)` | Find k nearest neighbors. Returns `(distances, indices)` tensors. |
+| `forward(queries)` | Same as `search()` but uses configured `k`. For TorchScript export. |
 
 **Properties:**
-- `ntotal` - Number of indexed vectors
-- `nprobe` - Number of clusters to probe (settable)
+
+| Property | Description |
+|----------|-------------|
+| `ntotal` | Number of indexed vectors |
+| `nprobe` | Clusters to probe during search (settable, higher = more accurate) |
+| `k` | Default k for `forward()` (settable) |
+| `is_trained` | Whether index has been trained |
 
 ### `from_faiss(index)`
 
-Convert a trained FAISS index to PyTorch. Currently supports `IndexIVFFlat`.
+Convert a trained FAISS index to PyTorch.
 
-## Performance
+```python
+from torch_similarity_search import from_faiss
 
-- Batched queries: `(batch_size, dim)` -> `(batch_size, k)`
-- GPU optimized with `torch.cdist`
-- TorchScript compatible for kernel fusion
+torch_index = from_faiss(faiss_index)  # Returns IVFFlatIndex
+```
+
+**Supported:** `faiss.IndexIVFFlat` (L2 and inner product metrics)
+
+## Requirements
+
+- Python 3.11+
+- PyTorch 2.0+
+- NumPy (for FAISS conversion only)
+- FAISS (optional, for conversion only)
 
 ## License
 
