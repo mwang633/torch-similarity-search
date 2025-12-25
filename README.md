@@ -108,11 +108,28 @@ torch.jit.script(model).save("search_pipeline.pt")
 
 | FAISS Index | PyTorch Module | Status |
 |-------------|----------------|--------|
+| `IndexFlat` | `FlatIndex` | ✅ Supported (v0.0.3) |
 | `IndexIVFFlat` | `IVFFlatIndex` | ✅ Supported |
 | `IndexIVFPQ` | `IVFPQIndex` | Planned |
-| `IndexFlat` | `FlatIndex` | Planned |
 
 ## API Reference
+
+### `FlatIndex`
+
+Brute-force exact search - compares against all vectors. Best for small datasets or exact results.
+
+```python
+from torch_similarity_search import FlatIndex
+
+index = FlatIndex(
+    dim=128,          # Vector dimensionality
+    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    k=10,             # Default k for forward() method
+)
+
+index.add(vectors)    # No training required
+distances, indices = index.search(queries, k=10)
+```
 
 ### `IVFFlatIndex`
 
@@ -128,24 +145,26 @@ index = IVFFlatIndex(
     nprobe=10,        # Clusters to search at query time
     k=10,             # Default k for forward() method
 )
+
+index.train(vectors)  # Train centroids first
+index.add(vectors)
+distances, indices = index.search(queries, k=10)
 ```
 
-**Methods:**
+**Common Methods (both index types):**
 
 | Method | Description |
 |--------|-------------|
-| `train(vectors)` | Train cluster centroids via k-means. Requires `(n, dim)` tensor with `n >= nlist`. |
 | `add(vectors)` | Add vectors to index. Accepts `(n, dim)` or `(dim,)` tensors. |
 | `search(queries, k)` | Find k nearest neighbors. Returns `(distances, indices)` tensors. |
 | `forward(queries)` | Same as `search()` but uses configured `k`. For TorchScript export. |
 
-**Properties:**
+**IVFFlatIndex-specific:**
 
-| Property | Description |
-|----------|-------------|
-| `ntotal` | Number of indexed vectors |
+| Method/Property | Description |
+|-----------------|-------------|
+| `train(vectors)` | Train cluster centroids via k-means. Requires `n >= nlist`. |
 | `nprobe` | Clusters to probe during search (settable, higher = more accurate) |
-| `k` | Default k for `forward()` (settable) |
 | `is_trained` | Whether index has been trained |
 
 ### `from_faiss(index)`

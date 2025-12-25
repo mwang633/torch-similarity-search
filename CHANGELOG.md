@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.3] - Unreleased
+
+### FlatIndex
+
+- **`FlatIndex`** - Brute-force exact nearest neighbor search. No training required, compares against all vectors. Best for small datasets or when exact results are needed.
+
 ## [0.0.2] - 2025-12-25
 
 ### Optimized IVFFlat Implementation
