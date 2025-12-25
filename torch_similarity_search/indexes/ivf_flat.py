@@ -3,10 +3,10 @@
 from typing import Literal, Tuple
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from torch_similarity_search.indexes.base import BaseIndex
-from torch_similarity_search.utils.distance import l2_distance, inner_product
+from torch_similarity_search.utils.distance import inner_product, l2_distance
 
 
 class IVFFlatIndex(BaseIndex):
@@ -20,7 +20,7 @@ class IVFFlatIndex(BaseIndex):
         dim: Dimensionality of vectors
         nlist: Number of clusters/centroids
         metric: Distance metric ('l2' or 'ip' for inner product)
-        nprobe: Number of clusters to search (default: 1)
+        nprobe: Number of clusters to search (default: 20)
     """
 
     def __init__(
@@ -28,7 +28,7 @@ class IVFFlatIndex(BaseIndex):
         dim: int,
         nlist: int,
         metric: Literal["l2", "ip"] = "l2",
-        nprobe: int = 1,
+        nprobe: int = 20,
     ):
         super().__init__()
         self._dim = dim
@@ -43,15 +43,17 @@ class IVFFlatIndex(BaseIndex):
         self.register_buffer("vectors", torch.zeros(0, dim))
 
         # Cluster assignment for each vector: (ntotal,)
-        self.register_buffer("assignments", torch.zeros(0, dtype=torch.long))
+        # Using int32 for better GPU performance (sufficient for up to 2B vectors)
+        self.register_buffer("assignments", torch.zeros(0, dtype=torch.int))
 
         # Precomputed list boundaries for efficient indexing
         # list_offsets[i] = start index of cluster i in sorted order
         # list_sizes[i] = number of vectors in cluster i
-        self.register_buffer("list_offsets", torch.zeros(nlist, dtype=torch.long))
-        self.register_buffer("list_sizes", torch.zeros(nlist, dtype=torch.long))
+        self.register_buffer("list_offsets", torch.zeros(nlist, dtype=torch.int))
+        self.register_buffer("list_sizes", torch.zeros(nlist, dtype=torch.int))
 
         # Original indices (for returning correct IDs after sorting by cluster)
+        # Keep as int64 for FAISS compatibility and user-facing API
         self.register_buffer("indices", torch.zeros(0, dtype=torch.long))
 
         self._is_trained = False
@@ -151,9 +153,9 @@ class IVFFlatIndex(BaseIndex):
         n = vectors.shape[0]
         device = vectors.device
 
-        # Compute cluster assignments
+        # Compute cluster assignments (int32 for GPU efficiency)
         dists = self._compute_distances(vectors, self.centroids)
-        new_assignments = dists.argmin(dim=1)
+        new_assignments = dists.argmin(dim=1).int()
 
         # Append to existing data
         old_ntotal = self.ntotal
@@ -184,12 +186,12 @@ class IVFFlatIndex(BaseIndex):
         self.indices = self.indices[sorted_order]
         self.assignments = self.assignments[sorted_order]
 
-        # Compute list sizes and offsets
-        list_sizes = torch.zeros(self._nlist, dtype=torch.long, device=device)
+        # Compute list sizes and offsets (int32 for GPU efficiency)
+        list_sizes = torch.zeros(self._nlist, dtype=torch.int, device=device)
         for i in range(self._nlist):
             list_sizes[i] = (self.assignments == i).sum()
 
-        list_offsets = torch.zeros(self._nlist, dtype=torch.long, device=device)
+        list_offsets = torch.zeros(self._nlist, dtype=torch.int, device=device)
         list_offsets[1:] = torch.cumsum(list_sizes[:-1], dim=0)
 
         self.list_sizes = list_sizes
@@ -267,7 +269,3 @@ class IVFFlatIndex(BaseIndex):
             all_indices = all_indices.squeeze(0)
 
         return all_distances, all_indices
-
-    def forward(self, queries: Tensor, k: int) -> Tuple[Tensor, Tensor]:
-        """Alias for search() to support nn.Module interface."""
-        return self.search(queries, k)

@@ -15,7 +15,7 @@ class TestIVFFlatIndex:
         assert index.dim == 128
         assert index.nlist == 10
         assert index.ntotal == 0
-        assert index.nprobe == 1
+        assert index.nprobe == 20
         assert not index.is_trained
 
     def test_train(self):

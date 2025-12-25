@@ -46,3 +46,7 @@ class BaseIndex(nn.Module):
     def dim(self) -> int:
         """Dimensionality of indexed vectors."""
         pass
+
+    def forward(self, queries: Tensor, k: int) -> Tuple[Tensor, Tensor]:
+        """Alias for search() to support nn.Module interface."""
+        return self.search(queries, k)
