@@ -174,8 +174,8 @@ class TestIVFFlatIndex:
         assert distances[0, 0] < -0.99
 
     def test_forward_alias(self):
-        """Test that forward() is an alias for search()."""
-        index = IVFFlatIndex(dim=32, nlist=4, nprobe=4)
+        """Test that forward() uses configured k for Triton compatibility."""
+        index = IVFFlatIndex(dim=32, nlist=4, nprobe=4, k=5)
         vectors = torch.randn(100, 32)
 
         index.train(vectors)
@@ -183,10 +183,16 @@ class TestIVFFlatIndex:
 
         query = vectors[0:1]
         d1, i1 = index.search(query, k=5)
-        d2, i2 = index.forward(query, k=5)
+        d2, i2 = index.forward(query)  # Uses configured k=5
 
         assert torch.equal(d1, d2)
         assert torch.equal(i1, i2)
+
+        # Test k setter
+        index.k = 3
+        d3, i3 = index.forward(query)
+        assert d3.shape == (1, 3)
+        assert i3.shape == (1, 3)
 
     def test_recall_with_higher_nprobe(self):
         """Test that higher nprobe gives better recall."""

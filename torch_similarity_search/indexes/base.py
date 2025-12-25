@@ -46,6 +46,17 @@ class BaseIndex(nn.Module):
         """Dimensionality of indexed vectors."""
         pass
 
-    def forward(self, queries: Tensor, k: int) -> Tuple[Tensor, Tensor]:
-        """Alias for search() to support nn.Module interface."""
-        return self.search(queries, k)
+    @property
+    @abstractmethod
+    def k(self) -> int:
+        """Default k for forward() - number of neighbors to return."""
+        pass
+
+    def forward(self, queries: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        nn.Module interface for inference (uses configured k).
+
+        For Triton/TorchScript deployment, k is fixed at export time.
+        Use search(queries, k) for runtime-configurable k.
+        """
+        return self.search(queries, self.k)

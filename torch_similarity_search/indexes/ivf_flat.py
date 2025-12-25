@@ -6,7 +6,7 @@ import torch
 from torch import Tensor
 
 from torch_similarity_search.indexes.base import BaseIndex
-from torch_similarity_search.utils.distance import inner_product, l2_distance
+from torch_similarity_search.utils.distance import DistanceModule
 
 
 class IVFFlatIndex(BaseIndex):
@@ -21,6 +21,7 @@ class IVFFlatIndex(BaseIndex):
         nlist: Number of clusters/centroids
         metric: Distance metric ('l2' or 'ip' for inner product)
         nprobe: Number of clusters to search (default: 20)
+        k: Default number of neighbors for forward() (default: 10)
     """
 
     def __init__(
@@ -29,12 +30,16 @@ class IVFFlatIndex(BaseIndex):
         nlist: int,
         metric: Literal["l2", "ip"] = "l2",
         nprobe: int = 20,
+        k: int = 10,
     ):
         super().__init__()
         self._dim = dim
         self._nlist = nlist
-        self._metric = metric
         self._nprobe = nprobe
+        self._k = k
+
+        # Distance metric as submodule (TorchScript compatible)
+        self.distance = DistanceModule(metric)
 
         # Cluster centroids: (nlist, dim)
         self.register_buffer("centroids", torch.zeros(nlist, dim))
@@ -53,8 +58,8 @@ class IVFFlatIndex(BaseIndex):
         self.register_buffer("list_sizes", torch.zeros(nlist, dtype=torch.int))
 
         # Original indices (for returning correct IDs after sorting by cluster)
-        # Keep as int64 for FAISS compatibility and user-facing API
-        self.register_buffer("indices", torch.zeros(0, dtype=torch.long))
+        # Using int32 for GPU efficiency (supports up to 2B vectors)
+        self.register_buffer("indices", torch.zeros(0, dtype=torch.int))
 
         self._is_trained = False
 
@@ -84,12 +89,15 @@ class IVFFlatIndex(BaseIndex):
     def is_trained(self) -> bool:
         return self._is_trained
 
-    def _compute_distances(self, x: Tensor, y: Tensor) -> Tensor:
-        """Compute distances based on metric."""
-        if self._metric == "l2":
-            return l2_distance(x, y)
-        else:
-            return inner_product(x, y)
+    @property
+    def k(self) -> int:
+        return self._k
+
+    @k.setter
+    def k(self, value: int) -> None:
+        if value < 1:
+            raise ValueError("k must be at least 1")
+        self._k = value
 
     def train(self, vectors: Tensor) -> None:
         """
@@ -101,7 +109,7 @@ class IVFFlatIndex(BaseIndex):
         if vectors.dim() == 1:
             vectors = vectors.unsqueeze(0)
 
-        n = vectors.shape[0]
+        n, dim = vectors.shape
         if n < self._nlist:
             raise ValueError(f"Need at least {self._nlist} vectors to train, got {n}")
 
@@ -109,25 +117,34 @@ class IVFFlatIndex(BaseIndex):
         perm = torch.randperm(n, device=vectors.device)[: self._nlist]
         centroids = vectors[perm].clone()
 
-        # K-means iterations
+        # K-means iterations (fully vectorized)
         max_iters = 20
         for _ in range(max_iters):
             # Assign vectors to nearest centroid
-            dists = self._compute_distances(vectors, centroids)
+            dists = self.distance.pairwise(vectors, centroids)
             assignments = dists.argmin(dim=1)
 
-            # Update centroids
+            # Update centroids using scatter_add (vectorized)
+            # Sum vectors per cluster
             new_centroids = torch.zeros_like(centroids)
-            counts = torch.zeros(self._nlist, device=vectors.device)
+            new_centroids.scatter_add_(
+                0, assignments.unsqueeze(1).expand(-1, dim), vectors
+            )
 
-            for i in range(self._nlist):
-                mask = assignments == i
-                if mask.any():
-                    new_centroids[i] = vectors[mask].mean(dim=0)
-                    counts[i] = mask.sum()
-                else:
-                    # Empty cluster: reinitialize with random vector
-                    new_centroids[i] = vectors[torch.randint(n, (1,))]
+            # Count vectors per cluster
+            counts = torch.zeros(self._nlist, device=vectors.device)
+            counts.scatter_add_(0, assignments, torch.ones(n, device=vectors.device))
+
+            # Compute mean (avoid division by zero for empty clusters)
+            non_empty = counts > 0
+            new_centroids[non_empty] /= counts[non_empty].unsqueeze(1)
+
+            # Reinitialize empty clusters with random vectors
+            empty_mask = ~non_empty
+            if empty_mask.any():
+                n_empty = int(empty_mask.sum().item())
+                random_idx = torch.randint(n, (n_empty,), device=vectors.device)
+                new_centroids[empty_mask] = vectors[random_idx]
 
             # Check convergence
             if torch.allclose(centroids, new_centroids, atol=1e-6):
@@ -154,12 +171,14 @@ class IVFFlatIndex(BaseIndex):
         device = vectors.device
 
         # Compute cluster assignments (int32 for GPU efficiency)
-        dists = self._compute_distances(vectors, self.centroids)
+        dists = self.distance.pairwise(vectors, self.centroids)
         new_assignments = dists.argmin(dim=1).int()
 
         # Append to existing data
         old_ntotal = self.ntotal
-        new_indices = torch.arange(old_ntotal, old_ntotal + n, device=device)
+        new_indices = torch.arange(
+            old_ntotal, old_ntotal + n, dtype=torch.int, device=device
+        )
 
         if old_ntotal == 0:
             self.vectors = vectors
@@ -199,7 +218,7 @@ class IVFFlatIndex(BaseIndex):
 
     def search(self, queries: Tensor, k: int) -> Tuple[Tensor, Tensor]:
         """
-        Batched k-nearest neighbor search.
+        Batched k-nearest neighbor search (fully vectorized for GPU efficiency).
 
         Args:
             queries: Query vectors of shape (batch_size, dim) or (dim,) for single query
@@ -218,54 +237,83 @@ class IVFFlatIndex(BaseIndex):
         batch_size = queries.shape[0]
         device = queries.device
 
-        # Find nearest centroids for each query
-        centroid_dists = self._compute_distances(queries, self.centroids)
+        # Find nearest centroids for each query: (batch_size, nprobe)
+        centroid_dists = self.distance.pairwise(queries, self.centroids)
         _, probe_indices = centroid_dists.topk(self._nprobe, dim=1, largest=False)
 
-        # Initialize results with infinity distances
-        all_distances = torch.full((batch_size, k), float("inf"), device=device)
-        all_indices = torch.full((batch_size, k), -1, dtype=torch.long, device=device)
+        # Get list sizes and offsets for probed clusters
+        # Shape: (batch_size, nprobe)
+        probed_sizes = self.list_sizes[probe_indices]  # (batch_size, nprobe)
+        probed_offsets = self.list_offsets[probe_indices]  # (batch_size, nprobe)
 
-        # Search each query - using tensor indexing for TorchScript compatibility
-        for q_idx in range(batch_size):
-            query = queries[q_idx : q_idx + 1]  # (1, dim)
-            candidate_distances: list[Tensor] = []
-            candidate_indices: list[Tensor] = []
+        # Find max list size across all probes (for padding)
+        max_list_size = int(probed_sizes.max().item())
 
-            # Probe each selected cluster
-            for probe_idx in range(self._nprobe):
-                cluster_id = int(probe_indices[q_idx, probe_idx])
-                list_size = int(self.list_sizes[cluster_id])
+        if max_list_size == 0:
+            # No vectors in any probed cluster
+            all_distances = torch.full((batch_size, k), float("inf"), device=device)
+            all_indices = torch.full(
+                (batch_size, k), -1, dtype=torch.int, device=device
+            )
+            if squeeze_output:
+                return all_distances.squeeze(0), all_indices.squeeze(0)
+            return all_distances, all_indices
 
-                if list_size == 0:
-                    continue
+        # Build a 3D tensor of candidate indices: (batch_size, nprobe, max_list_size)
+        # Each entry [b, p, i] = global vector index for query b, probe p, local index i
+        # Use broadcasting: offset[b,p] + arange(max_list_size)
+        local_indices = torch.arange(max_list_size, device=device)  # (max_list_size,)
+        # (batch_size, nprobe, max_list_size)
+        global_indices = probed_offsets.unsqueeze(2) + local_indices.view(1, 1, -1)
 
-                offset = int(self.list_offsets[cluster_id])
-                cluster_vectors = self.vectors[offset : offset + list_size]
-                cluster_indices = self.indices[offset : offset + list_size]
+        # Mask for valid entries: local_idx < list_size[b, p]
+        valid_mask_3d = local_indices.view(1, 1, -1) < probed_sizes.unsqueeze(
+            2
+        )  # (batch_size, nprobe, max_list_size)
 
-                # Compute distances to vectors in this cluster
-                dists = self._compute_distances(query, cluster_vectors).squeeze(0)
-                candidate_distances.append(dists)
-                candidate_indices.append(cluster_indices)
+        # Clamp indices for safe gathering (invalid will be masked out)
+        safe_global_indices = global_indices.clamp(min=0, max=self.ntotal - 1)
 
-            if len(candidate_distances) > 0:
-                # Concatenate all candidates
-                all_cand_dists = torch.cat(candidate_distances)
-                all_cand_indices = torch.cat(candidate_indices)
+        # Gather vectors: (batch_size, nprobe, max_list_size, dim)
+        candidate_vectors = self.vectors[safe_global_indices]
 
-                # Select top-k
-                num_candidates = all_cand_dists.shape[0]
-                actual_k = min(k, num_candidates)
+        # Gather original indices: (batch_size, nprobe, max_list_size)
+        candidate_orig_idx = self.indices[safe_global_indices]
 
-                topk_dists, topk_local = all_cand_dists.topk(actual_k, largest=False)
-                topk_indices = all_cand_indices[topk_local]
+        # Reshape for batch distance computation
+        # (batch_size, nprobe * max_list_size, dim)
+        n_candidates = self._nprobe * max_list_size
+        candidate_vectors_flat = candidate_vectors.view(batch_size, n_candidates, -1)
+        candidate_orig_idx_flat = candidate_orig_idx.view(batch_size, n_candidates)
+        valid_mask_flat = valid_mask_3d.view(batch_size, n_candidates)
 
-                all_distances[q_idx, :actual_k] = topk_dists
-                all_indices[q_idx, :actual_k] = topk_indices
+        # Compute distances: (batch_size, n_candidates)
+        distances = self.distance.batched(queries, candidate_vectors_flat)
+
+        # Mask invalid candidates with infinity
+        distances = distances.masked_fill(~valid_mask_flat, float("inf"))
+
+        # Select top-k
+        actual_k = min(k, n_candidates)
+        topk_dists, topk_local = distances.topk(actual_k, dim=1, largest=False)
+        topk_indices = candidate_orig_idx_flat.gather(1, topk_local)
+
+        # Pad to k if needed
+        if actual_k < k:
+            pad_dists = torch.full(
+                (batch_size, k - actual_k), float("inf"), device=device
+            )
+            pad_indices = torch.full(
+                (batch_size, k - actual_k), -1, dtype=torch.int, device=device
+            )
+            topk_dists = torch.cat([topk_dists, pad_dists], dim=1)
+            topk_indices = torch.cat([topk_indices, pad_indices], dim=1)
+
+        # Mark invalid results (from padding) with -1
+        topk_indices = topk_indices.masked_fill(topk_dists == float("inf"), -1)
 
         if squeeze_output:
-            all_distances = all_distances.squeeze(0)
-            all_indices = all_indices.squeeze(0)
+            topk_dists = topk_dists.squeeze(0)
+            topk_indices = topk_indices.squeeze(0)
 
-        return all_distances, all_indices
+        return topk_dists, topk_indices

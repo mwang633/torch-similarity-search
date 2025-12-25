@@ -1,5 +1,5 @@
 """Utility functions."""
 
-from torch_similarity_search.utils.distance import l2_distance, inner_product
+from torch_similarity_search.utils.distance import DistanceModule
 
-__all__ = ["l2_distance", "inner_product"]
+__all__ = ["DistanceModule"]

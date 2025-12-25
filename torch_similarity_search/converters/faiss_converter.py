@@ -106,9 +106,9 @@ def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
     indices = indices[sort_order]
     assignments = assignments[sort_order]
 
-    # Set buffers (assignments as int32 for GPU efficiency, indices as int64 for FAISS compat)
+    # Set buffers (all int32 for GPU efficiency)
     torch_index.vectors = torch.from_numpy(vectors).float()
-    torch_index.indices = torch.from_numpy(indices).long()
+    torch_index.indices = torch.from_numpy(indices).int()
     torch_index.assignments = torch.from_numpy(assignments).int()
 
     # Rebuild list structure
