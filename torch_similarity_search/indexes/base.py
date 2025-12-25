@@ -1,13 +1,49 @@
 """Abstract base class for similarity search indexes."""
 
 from abc import abstractmethod
-from typing import Tuple
+from typing import Literal, Tuple
 
 from torch import Tensor, nn
+
+from torch_similarity_search.utils.distance import DistanceModule
 
 
 class BaseIndex(nn.Module):
     """Abstract base for all similarity search indexes."""
+
+    def __init__(self, metric: Literal["l2", "ip"] = "l2"):
+        super().__init__()
+        self.distance = DistanceModule(metric)
+
+    def _normalize_vectors(
+        self, vectors: Tensor, name: str = "Vectors"
+    ) -> Tuple[Tensor, bool]:
+        """
+        Normalize input to 2D batch format and validate dimensions.
+
+        Args:
+            vectors: Input tensor of shape (n, dim) or (dim,)
+            name: Name for error messages
+
+        Returns:
+            Tuple of (normalized 2D tensor, should_squeeze flag)
+        """
+        if vectors.dim() == 1:
+            vec_dim = vectors.shape[0]
+            vectors = vectors.unsqueeze(0)
+            squeeze = True
+        elif vectors.dim() == 2:
+            vec_dim = vectors.shape[1]
+            squeeze = False
+        else:
+            raise ValueError(f"{name} must be 1D or 2D, got {vectors.dim()}D")
+
+        if vec_dim != self.dim:
+            raise ValueError(
+                f"{name} dimension {vec_dim} does not match index dimension {self.dim}"
+            )
+
+        return vectors, squeeze
 
     @abstractmethod
     def search(self, queries: Tensor, k: int) -> Tuple[Tensor, Tensor]:

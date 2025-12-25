@@ -100,6 +100,13 @@ def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
     indices = np.concatenate(all_indices, axis=0)
     assignments = np.concatenate(all_assignments, axis=0)
 
+    # Check indices fit in int32 (max ~2.1B)
+    if indices.max() > np.iinfo(np.int32).max:
+        raise ValueError(
+            f"FAISS index contains IDs exceeding int32 range "
+            f"(max ID: {indices.max()}). int32 supports up to {np.iinfo(np.int32).max}."
+        )
+
     # Sort by original index to maintain order
     sort_order = np.argsort(indices)
     vectors = vectors[sort_order]
@@ -108,7 +115,7 @@ def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
 
     # Set buffers (all int32 for GPU efficiency)
     torch_index.vectors = torch.from_numpy(vectors).float()
-    torch_index.indices = torch.from_numpy(indices).int()
+    torch_index.indices = torch.from_numpy(indices.astype(np.int32)).int()
     torch_index.assignments = torch.from_numpy(assignments).int()
 
     # Rebuild list structure

@@ -6,7 +6,6 @@ import torch
 from torch import Tensor
 
 from torch_similarity_search.indexes.base import BaseIndex
-from torch_similarity_search.utils.distance import DistanceModule
 
 
 class IVFFlatIndex(BaseIndex):
@@ -32,14 +31,11 @@ class IVFFlatIndex(BaseIndex):
         nprobe: int = 20,
         k: int = 10,
     ):
-        super().__init__()
+        super().__init__(metric=metric)
         self._dim = dim
         self._nlist = nlist
         self._nprobe = nprobe
         self._k = k
-
-        # Distance metric as submodule (TorchScript compatible)
-        self.distance = DistanceModule(metric)
 
         # Cluster centroids: (nlist, dim)
         self.register_buffer("centroids", torch.zeros(nlist, dim))
@@ -106,12 +102,20 @@ class IVFFlatIndex(BaseIndex):
         Args:
             vectors: Training vectors of shape (n, dim)
         """
-        if vectors.dim() == 1:
-            vectors = vectors.unsqueeze(0)
+        if vectors.dim() != 2:
+            raise ValueError(
+                f"Training vectors must be 2D (n, dim), got {vectors.dim()}D"
+            )
 
         n, dim = vectors.shape
+        if dim != self._dim:
+            raise ValueError(
+                f"Training vectors dimension {dim} does not match index dimension {self._dim}"
+            )
         if n < self._nlist:
-            raise ValueError(f"Need at least {self._nlist} vectors to train, got {n}")
+            raise ValueError(
+                f"Need at least {self._nlist} vectors to train, got {n}"
+            )
 
         # Simple k-means initialization: random selection
         perm = torch.randperm(n, device=vectors.device)[: self._nlist]
@@ -164,9 +168,7 @@ class IVFFlatIndex(BaseIndex):
         if not self._is_trained:
             raise RuntimeError("Index must be trained before adding vectors")
 
-        if vectors.dim() == 1:
-            vectors = vectors.unsqueeze(0)
-
+        vectors, _ = self._normalize_vectors(vectors)
         n = vectors.shape[0]
         device = vectors.device
 
@@ -228,12 +230,7 @@ class IVFFlatIndex(BaseIndex):
             distances: Shape (batch_size, k) - distances to nearest neighbors
             indices: Shape (batch_size, k) - indices of nearest neighbors
         """
-        if queries.dim() == 1:
-            queries = queries.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
-
+        queries, squeeze_output = self._normalize_vectors(queries, "Query vectors")
         batch_size = queries.shape[0]
         device = queries.device
 
