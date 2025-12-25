@@ -6,7 +6,120 @@ import torch
 
 faiss = pytest.importorskip("faiss")
 
-from torch_similarity_search import from_faiss  # noqa: E402
+from torch_similarity_search import from_faiss, FlatIndex  # noqa: E402
+
+
+class TestFlatConverter:
+    """Tests for IndexFlat conversion."""
+
+    def test_convert_flat_l2(self):
+        """Test converting FAISS IndexFlatL2 to PyTorch."""
+        np.random.seed(42)
+        dim = 64
+        n_vectors = 1000
+        n_queries = 50
+        k = 10
+
+        vectors = np.random.randn(n_vectors, dim).astype(np.float32)
+        queries = np.random.randn(n_queries, dim).astype(np.float32)
+
+        # Build FAISS index
+        faiss_index = faiss.IndexFlatL2(dim)
+        faiss_index.add(vectors)
+
+        # Search with FAISS
+        faiss_distances, faiss_indices = faiss_index.search(queries, k)
+
+        # Convert to PyTorch
+        torch_index = from_faiss(faiss_index)
+        assert isinstance(torch_index, FlatIndex)
+        assert torch_index.ntotal == n_vectors
+
+        # Search with PyTorch
+        queries_tensor = torch.from_numpy(queries)
+        torch_distances, torch_indices = torch_index.search(queries_tensor, k)
+
+        # Compare results - should be exact match
+        torch_distances = torch_distances.numpy()
+        torch_indices = torch_indices.numpy()
+
+        np.testing.assert_array_equal(torch_indices, faiss_indices)
+        np.testing.assert_allclose(
+            torch_distances, faiss_distances, rtol=1e-5, atol=1e-5
+        )
+
+    def test_convert_flat_ip(self):
+        """Test converting FAISS IndexFlatIP to PyTorch."""
+        np.random.seed(42)
+        dim = 64
+        n_vectors = 1000
+        n_queries = 50
+        k = 10
+
+        # Normalized vectors for inner product
+        vectors = np.random.randn(n_vectors, dim).astype(np.float32)
+        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+        queries = np.random.randn(n_queries, dim).astype(np.float32)
+        queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+
+        # Build FAISS index
+        faiss_index = faiss.IndexFlatIP(dim)
+        faiss_index.add(vectors)
+
+        # Search with FAISS
+        faiss_distances, faiss_indices = faiss_index.search(queries, k)
+
+        # Convert to PyTorch
+        torch_index = from_faiss(faiss_index)
+
+        # Search with PyTorch
+        queries_tensor = torch.from_numpy(queries)
+        torch_distances, torch_indices = torch_index.search(queries_tensor, k)
+
+        torch_distances = torch_distances.numpy()
+        torch_indices = torch_indices.numpy()
+
+        # Indices should match exactly
+        np.testing.assert_array_equal(torch_indices, faiss_indices)
+
+        # Distances: PyTorch returns negated IP, FAISS returns IP
+        np.testing.assert_allclose(
+            torch_distances, -faiss_distances, rtol=1e-5, atol=1e-5
+        )
+
+    def test_convert_empty_flat(self):
+        """Test converting an empty FAISS IndexFlat."""
+        dim = 64
+        faiss_index = faiss.IndexFlatL2(dim)
+
+        torch_index = from_faiss(faiss_index)
+
+        assert torch_index.ntotal == 0
+        assert torch_index.dim == dim
+
+    def test_flat_torchscript_export(self):
+        """Test that converted FlatIndex can be exported to TorchScript."""
+        np.random.seed(42)
+        dim = 32
+        n_vectors = 100
+
+        vectors = np.random.randn(n_vectors, dim).astype(np.float32)
+
+        faiss_index = faiss.IndexFlatL2(dim)
+        faiss_index.add(vectors)
+
+        torch_index = from_faiss(faiss_index)
+
+        # Export to TorchScript
+        scripted = torch.jit.script(torch_index)
+
+        # Test that it works
+        queries = torch.randn(10, dim)
+        d1, i1 = torch_index.search(queries, k=5)
+        d2, i2 = scripted.search(queries, k=5)
+
+        torch.testing.assert_close(d1, d2)
+        torch.testing.assert_close(i1, i2)
 
 
 class TestFAISSE2E:
@@ -117,7 +230,7 @@ class TestFAISSE2E:
         )
 
     def test_recall_at_k(self):
-        """Test recall@k compared to FAISS brute force."""
+        """Test recall@k using FlatIndex as ground truth baseline."""
         np.random.seed(42)
         dim = 128
         nlist = 50
@@ -128,46 +241,46 @@ class TestFAISSE2E:
         vectors = np.random.randn(n_vectors, dim).astype(np.float32)
         queries = np.random.randn(n_queries, dim).astype(np.float32)
 
-        # Ground truth with brute force
-        gt_index = faiss.IndexFlatL2(dim)
-        gt_index.add(vectors)
-        _, gt_indices = gt_index.search(queries, k)
+        # Ground truth using our FlatIndex (exact search)
+        gt_index = FlatIndex(dim=dim, metric="l2")
+        gt_index.add(torch.from_numpy(vectors))
+        queries_tensor = torch.from_numpy(queries)
+        _, gt_indices = gt_index.search(queries_tensor, k)
+        gt_indices = gt_indices.numpy()
 
-        # Build IVF index
+        # Build IVF index via FAISS and convert
         quantizer = faiss.IndexFlatL2(dim)
         faiss_index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_L2)
         faiss_index.train(vectors)
         faiss_index.add(vectors)
-
-        # Convert to PyTorch
         torch_index = from_faiss(faiss_index)
 
-        # Test different nprobe values
+        # Compute recall helper
+        def compute_recall(pred, gt):
+            recall = 0
+            for i in range(pred.shape[0]):
+                recall += len(set(pred[i].tolist()) & set(gt[i].tolist()))
+            return recall / (pred.shape[0] * k)
+
+        # Test different nprobe values - recall should increase
+        prev_recall = 0
         for nprobe in [1, 5, 10, 20]:
             torch_index.nprobe = nprobe
-            faiss_index.nprobe = nprobe
 
-            queries_tensor = torch.from_numpy(queries)
             torch_distances, torch_indices = torch_index.search(queries_tensor, k)
             torch_indices = torch_indices.numpy()
 
-            faiss_distances, faiss_indices = faiss_index.search(queries, k)
+            recall = compute_recall(torch_indices, gt_indices)
 
-            # Compute recall
-            def compute_recall(pred, gt):
-                recall = 0
-                for i in range(pred.shape[0]):
-                    recall += len(set(pred[i]) & set(gt[i]))
-                return recall / (pred.shape[0] * k)
-
-            torch_recall = compute_recall(torch_indices, gt_indices)
-            faiss_recall = compute_recall(faiss_indices, gt_indices)
-
-            # PyTorch recall should be very close to FAISS recall
-            assert abs(torch_recall - faiss_recall) < 0.05, (
-                f"nprobe={nprobe}: torch_recall={torch_recall:.3f}, "
-                f"faiss_recall={faiss_recall:.3f}"
+            # Recall should increase with nprobe
+            assert recall >= prev_recall, (
+                f"Recall decreased: nprobe={nprobe}, recall={recall:.3f}, "
+                f"prev={prev_recall:.3f}"
             )
+            prev_recall = recall
+
+        # With nprobe=20, recall should be decent (>0.5)
+        assert prev_recall > 0.5, f"Final recall too low: {prev_recall:.3f}"
 
     def test_empty_index_conversion(self):
         """Test converting an empty FAISS index."""

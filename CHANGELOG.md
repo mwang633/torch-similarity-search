@@ -2,9 +2,11 @@
 
 ## [0.0.3] - Unreleased
 
-### FlatIndex
+### FlatIndex + IndexFlat Converter
 
 - **`FlatIndex`** - Brute-force exact nearest neighbor search. No training required, compares against all vectors. Best for small datasets or when exact results are needed.
+- **`from_faiss()` now supports `IndexFlatL2` and `IndexFlatIP`** - Converts FAISS flat indexes to `FlatIndex`
+- **FlatIndex as baseline** - Recall tests now use `FlatIndex` as ground truth for IVFFlat accuracy testing
 
 ## [0.0.2] - 2025-12-25
 

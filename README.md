@@ -108,7 +108,7 @@ torch.jit.script(model).save("search_pipeline.pt")
 
 | FAISS Index | PyTorch Module | Status |
 |-------------|----------------|--------|
-| `IndexFlat` | `FlatIndex` | ✅ Supported (v0.0.3) |
+| `IndexFlat` | `FlatIndex` | ✅ Supported |
 | `IndexIVFFlat` | `IVFFlatIndex` | ✅ Supported |
 | `IndexIVFPQ` | `IVFPQIndex` | Planned |
 
@@ -169,15 +169,17 @@ distances, indices = index.search(queries, k=10)
 
 ### `from_faiss(index)`
 
-Convert a trained FAISS index to PyTorch.
+Convert a FAISS index to PyTorch.
 
 ```python
 from torch_similarity_search import from_faiss
 
-torch_index = from_faiss(faiss_index)  # Returns IVFFlatIndex
+torch_index = from_faiss(faiss_index)  # Returns FlatIndex or IVFFlatIndex
 ```
 
-**Supported:** `faiss.IndexIVFFlat` (L2 and inner product metrics)
+**Supported:**
+- `faiss.IndexFlatL2`, `faiss.IndexFlatIP` → `FlatIndex`
+- `faiss.IndexIVFFlat` → `IVFFlatIndex`
 
 ## Requirements
 

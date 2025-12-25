@@ -1,32 +1,35 @@
 """Convert FAISS indexes to PyTorch modules."""
 
+from typing import Union
+
 import torch
 import numpy as np
 import faiss
 
+from torch_similarity_search.indexes.flat import FlatIndex
 from torch_similarity_search.indexes.ivf_flat import IVFFlatIndex
 
 
-def from_faiss(index) -> IVFFlatIndex:
+def from_faiss(index) -> Union[FlatIndex, IVFFlatIndex]:
     """
     Convert a trained FAISS index to a PyTorch module.
 
-    Currently supports:
-    - faiss.IndexIVFFlat
+    Supported index types:
+    - faiss.IndexFlatL2, faiss.IndexFlatIP -> FlatIndex
+    - faiss.IndexIVFFlat -> IVFFlatIndex
 
     Args:
-        index: A trained FAISS index
+        index: A FAISS index
 
     Returns:
-        A PyTorch IVFFlatIndex module with the same data
+        A PyTorch index module with the same data
 
     Example:
         >>> import faiss
         >>> import torch_similarity_search as tss
         >>>
-        >>> # Train FAISS index
-        >>> index = faiss.IndexIVFFlat(faiss.IndexFlatL2(128), 128, 100)
-        >>> index.train(vectors)
+        >>> # Create FAISS index
+        >>> index = faiss.IndexFlatL2(128)
         >>> index.add(vectors)
         >>>
         >>> # Convert to PyTorch
@@ -36,10 +39,34 @@ def from_faiss(index) -> IVFFlatIndex:
     """
     index_type = type(index).__name__
 
-    if index_type == "IndexIVFFlat":
+    if index_type in ("IndexFlatL2", "IndexFlatIP", "IndexFlat"):
+        return _convert_flat(index)
+    elif index_type == "IndexIVFFlat":
         return _convert_ivf_flat(index)
     else:
         raise ValueError(f"Unsupported index type: {index_type}")
+
+
+def _convert_flat(faiss_index) -> FlatIndex:
+    """Convert a FAISS IndexFlat to PyTorch."""
+    dim = faiss_index.d
+    ntotal = faiss_index.ntotal
+
+    # Determine metric type
+    # FAISS: METRIC_L2 = 1, METRIC_INNER_PRODUCT = 0
+    metric = "l2" if faiss_index.metric_type == 1 else "ip"
+
+    # Create PyTorch index
+    torch_index = FlatIndex(dim=dim, metric=metric)
+
+    if ntotal == 0:
+        return torch_index
+
+    # Extract all vectors
+    vectors = faiss_index.reconstruct_n(0, ntotal)
+    torch_index.vectors = torch.from_numpy(vectors.copy()).float()
+
+    return torch_index
 
 
 def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
