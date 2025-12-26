@@ -110,7 +110,7 @@ torch.jit.script(model).save("search_pipeline.pt")
 |-------------|----------------|--------|
 | `IndexFlat` | `FlatIndex` | ✅ Supported |
 | `IndexIVFFlat` | `IVFFlatIndex` | ✅ Supported |
-| `IndexIVFPQ` | `IVFPQIndex` | Planned |
+| `IndexIVFPQ` | `IVFPQIndex` | ✅ Supported |
 
 ## API Reference
 
@@ -167,6 +167,30 @@ distances, indices = index.search(queries, k=10)
 | `nprobe` | Clusters to probe during search (settable, higher = more accurate) |
 | `is_trained` | Whether index has been trained |
 
+### `IVFPQIndex`
+
+Inverted File with Product Quantization - combines clustering with vector compression for memory-efficient approximate search. Best for large datasets where memory is a concern.
+
+```python
+from torch_similarity_search import IVFPQIndex
+
+index = IVFPQIndex(
+    dim=128,          # Vector dimensionality (must be divisible by M)
+    nlist=100,        # Number of IVF clusters
+    M=8,              # Number of PQ subquantizers (compression factor)
+    nbits=8,          # Bits per code (default: 8, meaning 256 centroids per subquantizer)
+    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    nprobe=10,        # Clusters to search at query time
+    k=10,             # Default k for forward() method
+)
+
+index.train(vectors)  # Train IVF centroids and PQ codebooks
+index.add(vectors)
+distances, indices = index.search(queries, k=10)
+```
+
+**Compression:** With `M=8` and `nbits=8`, each 128-dim vector (512 bytes) is compressed to just 8 bytes - a 64x reduction in memory usage.
+
 ### `from_faiss(index)`
 
 Convert a FAISS index to PyTorch.
@@ -174,12 +198,13 @@ Convert a FAISS index to PyTorch.
 ```python
 from torch_similarity_search import from_faiss
 
-torch_index = from_faiss(faiss_index)  # Returns FlatIndex or IVFFlatIndex
+torch_index = from_faiss(faiss_index)  # Returns FlatIndex, IVFFlatIndex, or IVFPQIndex
 ```
 
 **Supported:**
 - `faiss.IndexFlatL2`, `faiss.IndexFlatIP` → `FlatIndex`
 - `faiss.IndexIVFFlat` → `IVFFlatIndex`
+- `faiss.IndexIVFPQ` → `IVFPQIndex`
 
 ## Requirements
 

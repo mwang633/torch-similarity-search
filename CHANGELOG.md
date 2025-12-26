@@ -10,9 +10,20 @@
 
 ### Cosine Similarity
 
-- **Cosine distance metric** - All index types now support `metric="cosine"` for cosine similarity search
+- **Cosine distance metric** - FlatIndex and IVFFlatIndex now support `metric="cosine"` for cosine similarity search
 - Auto-normalizes vectors during distance computation (1 - cosine_similarity)
 - TorchScript compatible
+
+### IVFPQIndex + IndexIVFPQ Converter
+
+- **`IVFPQIndex`** - Inverted File with Product Quantization for memory-efficient approximate search
+  - Combines IVF clustering with PQ compression
+  - Splits vectors into M subvectors, each quantized with 2^nbits centroids
+  - 64x compression (128-dim float32 → 8 bytes with M=8, nbits=8)
+  - ADC (Asymmetric Distance Computation) for fast approximate search
+  - Supports both L2 and inner product (IP) distance metrics
+- **`from_faiss()` now supports `IndexIVFPQ`** - Converts FAISS IVFPQ indexes including PQ codebooks
+- Full TorchScript support for production deployment
 
 ## [0.0.2] - 2025-12-25
 
