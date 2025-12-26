@@ -8,6 +8,12 @@
 - **`from_faiss()` now supports `IndexFlatL2` and `IndexFlatIP`** - Converts FAISS flat indexes to `FlatIndex`
 - **FlatIndex as baseline** - Recall tests now use `FlatIndex` as ground truth for IVFFlat accuracy testing
 
+### Cosine Similarity
+
+- **Cosine distance metric** - All index types now support `metric="cosine"` for cosine similarity search
+- Auto-normalizes vectors during distance computation (1 - cosine_similarity)
+- TorchScript compatible
+
 ## [0.0.2] - 2025-12-25
 
 ### Optimized IVFFlat Implementation

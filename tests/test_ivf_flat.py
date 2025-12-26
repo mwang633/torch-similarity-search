@@ -229,6 +229,45 @@ class TestIVFFlatIndex:
         # Higher nprobe should give better recall
         assert recall_5 >= recall_1
 
+    def test_cosine_metric(self):
+        """Test cosine distance metric."""
+        index = IVFFlatIndex(dim=32, nlist=4, metric="cosine", nprobe=4)
+        vectors = torch.randn(100, 32)
+
+        index.train(vectors)
+        index.add(vectors)
+
+        query = vectors[0:1]
+        distances, indices = index.search(query, k=5)
+
+        assert distances.shape == (1, 5)
+        assert indices[0, 0] == 0
+        # For the query itself, cosine distance should be ~0 (1 - 1 = 0)
+        assert distances[0, 0] < 1e-5
+
+    def test_cosine_vs_manual(self):
+        """Test cosine distance matches manual computation."""
+        index = IVFFlatIndex(dim=32, nlist=4, metric="cosine", nprobe=4)
+
+        torch.manual_seed(42)
+        vectors = torch.randn(100, 32)
+
+        index.train(vectors)
+        index.add(vectors)
+
+        queries = torch.randn(10, 32)
+        distances, indices = index.search(queries, k=5)
+
+        # Verify results by recomputing cosine distances
+        for i in range(10):
+            for j in range(5):
+                idx = indices[i, j].item()
+                if idx >= 0:
+                    q_norm = queries[i] / queries[i].norm()
+                    v_norm = vectors[idx] / vectors[idx].norm()
+                    expected_dist = 1.0 - (q_norm * v_norm).sum()
+                    assert abs(distances[i, j] - expected_dist) < 1e-4
+
     def test_cuda_if_available(self):
         """Test that index works on CUDA if available."""
         if not torch.cuda.is_available():

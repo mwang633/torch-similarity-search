@@ -17,14 +17,14 @@ class FlatIndex(BaseIndex):
 
     Args:
         dim: Dimensionality of vectors
-        metric: Distance metric ('l2' or 'ip' for inner product)
+        metric: Distance metric ('l2', 'ip' for inner product, or 'cosine')
         k: Default number of neighbors for forward() (default: 10)
     """
 
     def __init__(
         self,
         dim: int,
-        metric: Literal["l2", "ip"] = "l2",
+        metric: Literal["l2", "ip", "cosine"] = "l2",
         k: int = 10,
     ):
         super().__init__(metric=metric)

@@ -123,7 +123,7 @@ from torch_similarity_search import FlatIndex
 
 index = FlatIndex(
     dim=128,          # Vector dimensionality
-    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    metric="l2",      # Distance metric: "l2", "ip" (inner product), or "cosine"
     k=10,             # Default k for forward() method
 )
 
@@ -141,7 +141,7 @@ from torch_similarity_search import IVFFlatIndex
 index = IVFFlatIndex(
     dim=128,          # Vector dimensionality
     nlist=100,        # Number of clusters (higher = faster but less accurate)
-    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    metric="l2",      # Distance metric: "l2", "ip" (inner product), or "cosine"
     nprobe=10,        # Clusters to search at query time
     k=10,             # Default k for forward() method
 )

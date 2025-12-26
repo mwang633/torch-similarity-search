@@ -18,7 +18,7 @@ class IVFFlatIndex(BaseIndex):
     Args:
         dim: Dimensionality of vectors
         nlist: Number of clusters/centroids
-        metric: Distance metric ('l2' or 'ip' for inner product)
+        metric: Distance metric ('l2', 'ip' for inner product, or 'cosine')
         nprobe: Number of clusters to search (default: 20)
         k: Default number of neighbors for forward() (default: 10)
     """
@@ -27,7 +27,7 @@ class IVFFlatIndex(BaseIndex):
         self,
         dim: int,
         nlist: int,
-        metric: Literal["l2", "ip"] = "l2",
+        metric: Literal["l2", "ip", "cosine"] = "l2",
         nprobe: int = 20,
         k: int = 10,
     ):
