@@ -108,11 +108,28 @@ torch.jit.script(model).save("search_pipeline.pt")
 
 | FAISS Index | PyTorch Module | Status |
 |-------------|----------------|--------|
+| `IndexFlat` | `FlatIndex` | ✅ Supported |
 | `IndexIVFFlat` | `IVFFlatIndex` | ✅ Supported |
-| `IndexIVFPQ` | `IVFPQIndex` | Planned |
-| `IndexFlat` | `FlatIndex` | Planned |
+| `IndexIVFPQ` | `IVFPQIndex` | ✅ Supported |
 
 ## API Reference
+
+### `FlatIndex`
+
+Brute-force exact search - compares against all vectors. Best for small datasets or exact results.
+
+```python
+from torch_similarity_search import FlatIndex
+
+index = FlatIndex(
+    dim=128,          # Vector dimensionality
+    metric="l2",      # Distance metric: "l2", "ip" (inner product), or "cosine"
+    k=10,             # Default k for forward() method
+)
+
+index.add(vectors)    # No training required
+distances, indices = index.search(queries, k=10)
+```
 
 ### `IVFFlatIndex`
 
@@ -124,41 +141,70 @@ from torch_similarity_search import IVFFlatIndex
 index = IVFFlatIndex(
     dim=128,          # Vector dimensionality
     nlist=100,        # Number of clusters (higher = faster but less accurate)
-    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    metric="l2",      # Distance metric: "l2", "ip" (inner product), or "cosine"
     nprobe=10,        # Clusters to search at query time
     k=10,             # Default k for forward() method
 )
+
+index.train(vectors)  # Train centroids first
+index.add(vectors)
+distances, indices = index.search(queries, k=10)
 ```
 
-**Methods:**
+**Common Methods (both index types):**
 
 | Method | Description |
 |--------|-------------|
-| `train(vectors)` | Train cluster centroids via k-means. Requires `(n, dim)` tensor with `n >= nlist`. |
 | `add(vectors)` | Add vectors to index. Accepts `(n, dim)` or `(dim,)` tensors. |
 | `search(queries, k)` | Find k nearest neighbors. Returns `(distances, indices)` tensors. |
 | `forward(queries)` | Same as `search()` but uses configured `k`. For TorchScript export. |
 
-**Properties:**
+**IVFFlatIndex-specific:**
 
-| Property | Description |
-|----------|-------------|
-| `ntotal` | Number of indexed vectors |
+| Method/Property | Description |
+|-----------------|-------------|
+| `train(vectors)` | Train cluster centroids via k-means. Requires `n >= nlist`. |
 | `nprobe` | Clusters to probe during search (settable, higher = more accurate) |
-| `k` | Default k for `forward()` (settable) |
 | `is_trained` | Whether index has been trained |
+
+### `IVFPQIndex`
+
+Inverted File with Product Quantization - combines clustering with vector compression for memory-efficient approximate search. Best for large datasets where memory is a concern.
+
+```python
+from torch_similarity_search import IVFPQIndex
+
+index = IVFPQIndex(
+    dim=128,          # Vector dimensionality (must be divisible by M)
+    nlist=100,        # Number of IVF clusters
+    M=8,              # Number of PQ subquantizers (compression factor)
+    nbits=8,          # Bits per code (default: 8, meaning 256 centroids per subquantizer)
+    metric="l2",      # Distance metric: "l2" or "ip" (inner product)
+    nprobe=10,        # Clusters to search at query time
+    k=10,             # Default k for forward() method
+)
+
+index.train(vectors)  # Train IVF centroids and PQ codebooks
+index.add(vectors)
+distances, indices = index.search(queries, k=10)
+```
+
+**Compression:** With `M=8` and `nbits=8`, each 128-dim vector (512 bytes) is compressed to just 8 bytes - a 64x reduction in memory usage.
 
 ### `from_faiss(index)`
 
-Convert a trained FAISS index to PyTorch.
+Convert a FAISS index to PyTorch.
 
 ```python
 from torch_similarity_search import from_faiss
 
-torch_index = from_faiss(faiss_index)  # Returns IVFFlatIndex
+torch_index = from_faiss(faiss_index)  # Returns FlatIndex, IVFFlatIndex, or IVFPQIndex
 ```
 
-**Supported:** `faiss.IndexIVFFlat` (L2 and inner product metrics)
+**Supported:**
+- `faiss.IndexFlatL2`, `faiss.IndexFlatIP` → `FlatIndex`
+- `faiss.IndexIVFFlat` → `IVFFlatIndex`
+- `faiss.IndexIVFPQ` → `IVFPQIndex`
 
 ## Requirements
 

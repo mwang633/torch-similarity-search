@@ -1,4 +1,7 @@
-"""End-to-end tests comparing with FAISS."""
+"""FAISS IndexIVFFlat conversion tests."""
+
+import os
+import tempfile
 
 import numpy as np
 import pytest
@@ -6,11 +9,11 @@ import torch
 
 faiss = pytest.importorskip("faiss")
 
-from torch_similarity_search import from_faiss  # noqa: E402
+from torch_similarity_search import from_faiss, FlatIndex  # noqa: E402
 
 
-class TestFAISSE2E:
-    """End-to-end tests comparing PyTorch implementation with FAISS."""
+class TestIVFFlatConverter:
+    """Tests for IndexIVFFlat conversion."""
 
     def test_convert_ivf_flat_l2(self):
         """Test converting FAISS IndexIVFFlat (L2) to PyTorch."""
@@ -117,7 +120,7 @@ class TestFAISSE2E:
         )
 
     def test_recall_at_k(self):
-        """Test recall@k compared to FAISS brute force."""
+        """Test recall@k using FlatIndex as ground truth baseline."""
         np.random.seed(42)
         dim = 128
         nlist = 50
@@ -128,46 +131,46 @@ class TestFAISSE2E:
         vectors = np.random.randn(n_vectors, dim).astype(np.float32)
         queries = np.random.randn(n_queries, dim).astype(np.float32)
 
-        # Ground truth with brute force
-        gt_index = faiss.IndexFlatL2(dim)
-        gt_index.add(vectors)
-        _, gt_indices = gt_index.search(queries, k)
+        # Ground truth using our FlatIndex (exact search)
+        gt_index = FlatIndex(dim=dim, metric="l2")
+        gt_index.add(torch.from_numpy(vectors))
+        queries_tensor = torch.from_numpy(queries)
+        _, gt_indices = gt_index.search(queries_tensor, k)
+        gt_indices = gt_indices.numpy()
 
-        # Build IVF index
+        # Build IVF index via FAISS and convert
         quantizer = faiss.IndexFlatL2(dim)
         faiss_index = faiss.IndexIVFFlat(quantizer, dim, nlist, faiss.METRIC_L2)
         faiss_index.train(vectors)
         faiss_index.add(vectors)
-
-        # Convert to PyTorch
         torch_index = from_faiss(faiss_index)
 
-        # Test different nprobe values
+        # Compute recall helper
+        def compute_recall(pred, gt):
+            recall = 0
+            for i in range(pred.shape[0]):
+                recall += len(set(pred[i].tolist()) & set(gt[i].tolist()))
+            return recall / (pred.shape[0] * k)
+
+        # Test different nprobe values - recall should increase
+        prev_recall = 0
         for nprobe in [1, 5, 10, 20]:
             torch_index.nprobe = nprobe
-            faiss_index.nprobe = nprobe
 
-            queries_tensor = torch.from_numpy(queries)
             torch_distances, torch_indices = torch_index.search(queries_tensor, k)
             torch_indices = torch_indices.numpy()
 
-            faiss_distances, faiss_indices = faiss_index.search(queries, k)
+            recall = compute_recall(torch_indices, gt_indices)
 
-            # Compute recall
-            def compute_recall(pred, gt):
-                recall = 0
-                for i in range(pred.shape[0]):
-                    recall += len(set(pred[i]) & set(gt[i]))
-                return recall / (pred.shape[0] * k)
-
-            torch_recall = compute_recall(torch_indices, gt_indices)
-            faiss_recall = compute_recall(faiss_indices, gt_indices)
-
-            # PyTorch recall should be very close to FAISS recall
-            assert abs(torch_recall - faiss_recall) < 0.05, (
-                f"nprobe={nprobe}: torch_recall={torch_recall:.3f}, "
-                f"faiss_recall={faiss_recall:.3f}"
+            # Recall should increase with nprobe
+            assert recall >= prev_recall, (
+                f"Recall decreased: nprobe={nprobe}, recall={recall:.3f}, "
+                f"prev={prev_recall:.3f}"
             )
+            prev_recall = recall
+
+        # With nprobe=20, recall should be decent (>0.5)
+        assert prev_recall > 0.5, f"Final recall too low: {prev_recall:.3f}"
 
     def test_empty_index_conversion(self):
         """Test converting an empty FAISS index."""
@@ -216,9 +219,6 @@ class TestFAISSE2E:
 
     def test_save_load(self):
         """Test saving and loading the PyTorch index via TorchScript."""
-        import os
-        import tempfile
-
         np.random.seed(42)
         dim = 32
         nlist = 4

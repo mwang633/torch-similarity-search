@@ -18,7 +18,7 @@ class IVFFlatIndex(BaseIndex):
     Args:
         dim: Dimensionality of vectors
         nlist: Number of clusters/centroids
-        metric: Distance metric ('l2' or 'ip' for inner product)
+        metric: Distance metric ('l2', 'ip' for inner product, or 'cosine')
         nprobe: Number of clusters to search (default: 20)
         k: Default number of neighbors for forward() (default: 10)
     """
@@ -27,7 +27,7 @@ class IVFFlatIndex(BaseIndex):
         self,
         dim: int,
         nlist: int,
-        metric: Literal["l2", "ip"] = "l2",
+        metric: Literal["l2", "ip", "cosine"] = "l2",
         nprobe: int = 20,
         k: int = 10,
     ):
@@ -206,9 +206,10 @@ class IVFFlatIndex(BaseIndex):
         self.assignments = self.assignments[sorted_order]
 
         # Compute list sizes and offsets (int32 for GPU efficiency)
-        list_sizes = torch.zeros(self._nlist, dtype=torch.int, device=device)
-        for i in range(self._nlist):
-            list_sizes[i] = (self.assignments == i).sum()
+        # Use bincount for O(n) instead of O(nlist * n) loop
+        list_sizes = torch.bincount(
+            self.assignments, minlength=self._nlist
+        ).to(dtype=torch.int, device=device)
 
         list_offsets = torch.zeros(self._nlist, dtype=torch.int, device=device)
         list_offsets[1:] = torch.cumsum(list_sizes[:-1], dim=0)
@@ -267,7 +268,7 @@ class IVFFlatIndex(BaseIndex):
         )  # (batch_size, nprobe, max_list_size)
 
         # Clamp indices for safe gathering (invalid will be masked out)
-        safe_global_indices = global_indices.clamp(min=0, max=self.ntotal - 1)
+        safe_global_indices = global_indices.clamp(min=0, max=max(self.ntotal - 1, 0))
 
         # Gather vectors: (batch_size, nprobe, max_list_size, dim)
         candidate_vectors = self.vectors[safe_global_indices]

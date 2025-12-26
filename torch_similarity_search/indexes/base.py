@@ -11,7 +11,7 @@ from torch_similarity_search.utils.distance import DistanceModule
 class BaseIndex(nn.Module):
     """Abstract base for all similarity search indexes."""
 
-    def __init__(self, metric: Literal["l2", "ip"] = "l2"):
+    def __init__(self, metric: Literal["l2", "ip", "cosine"] = "l2"):
         super().__init__()
         self.distance = DistanceModule(metric)
 
