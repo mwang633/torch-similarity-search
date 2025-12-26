@@ -6,7 +6,7 @@ import torch
 
 faiss = pytest.importorskip("faiss")
 
-from torch_similarity_search import from_faiss, FlatIndex, IVFPQIndex  # noqa: E402
+from torch_similarity_search import FlatIndex, IVFPQIndex, from_faiss  # noqa: E402
 
 
 class TestIVFPQConverter:
@@ -117,49 +117,62 @@ class TestIVFPQConverter:
         assert torch_index.M == M
 
     def test_ivfpq_recall(self):
-        """Test IVFPQ recall compared to exact search."""
+        """Test IVFPQ recall: both FAISS and PyTorch should have similar recall vs exact."""
         np.random.seed(42)
         dim = 64
         nlist = 20
         M = 8
-        n_vectors = 5000  # More vectors for better PQ training
+        n_vectors = 10000
         n_queries = 50
         k = 10
 
         vectors = np.random.randn(n_vectors, dim).astype(np.float32)
         queries = np.random.randn(n_queries, dim).astype(np.float32)
 
-        # Ground truth using FlatIndex
+        # Ground truth using FlatIndex (exact search)
         gt_index = FlatIndex(dim=dim, metric="l2")
         gt_index.add(torch.from_numpy(vectors))
         queries_tensor = torch.from_numpy(queries)
         _, gt_indices = gt_index.search(queries_tensor, k)
         gt_indices = gt_indices.numpy()
 
-        # Build IVFPQ via FAISS and convert
+        # Build IVFPQ via FAISS
         quantizer = faiss.IndexFlatL2(dim)
         faiss_index = faiss.IndexIVFPQ(quantizer, dim, nlist, M, 8)
         faiss_index.train(vectors)
         faiss_index.add(vectors)
-        torch_index = from_faiss(faiss_index)
-        torch_index.nprobe = nlist  # Search all clusters
+        faiss_index.nprobe = nlist  # Search all clusters
 
-        # Search
+        # Get FAISS results
+        _, faiss_indices = faiss_index.search(queries, k)
+
+        # Convert to PyTorch and search
+        torch_index = from_faiss(faiss_index)
+        torch_index.nprobe = nlist
         _, torch_indices = torch_index.search(queries_tensor, k)
         torch_indices = torch_indices.numpy()
 
-        # Compute recall
+        # Compute recall vs ground truth
         def compute_recall(pred, gt):
             recall = 0
             for i in range(pred.shape[0]):
                 recall += len(set(pred[i].tolist()) & set(gt[i].tolist()))
             return recall / (pred.shape[0] * k)
 
-        recall = compute_recall(torch_indices, gt_indices)
+        faiss_recall = compute_recall(faiss_indices, gt_indices)
+        torch_recall = compute_recall(torch_indices, gt_indices)
+        recall_diff = torch_recall - faiss_recall
 
-        # PQ is approximate - with compression comes some accuracy loss
-        # Note: PQ quantization introduces error, so recall won't be 1.0
-        assert recall > 0.2, f"Recall too low: {recall:.3f}"
+        print(f"FAISS recall: {faiss_recall:.3f}")
+        print(f"PyTorch recall: {torch_recall:.3f}")
+        print(f"Difference (PyTorch - FAISS): {recall_diff:.3f}")
+
+        # PyTorch recall should be at least as good as FAISS (within 5% tolerance).
+        # Negative diff means our implementation is worse than FAISS.
+        assert recall_diff >= -0.05, (
+            f"PyTorch recall too low vs FAISS: FAISS={faiss_recall:.3f}, "
+            f"PyTorch={torch_recall:.3f}, diff={recall_diff:.3f}"
+        )
 
     def test_ivfpq_torchscript_export(self):
         """Test that converted IVFPQ can be exported to TorchScript."""

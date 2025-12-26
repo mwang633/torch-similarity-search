@@ -25,6 +25,16 @@
 - **`from_faiss()` now supports `IndexIVFPQ`** - Converts FAISS IVFPQ indexes including PQ codebooks
 - Full TorchScript support for production deployment
 
+### Breaking Changes
+
+- **Python 3.11+ required** - Minimum Python version increased from 3.10 to 3.11
+
+### Improvements
+
+- **Optimized list rebuilding** - `_rebuild_lists()` now uses `torch.bincount` for O(n) instead of O(nlist × n) complexity
+- **Robust normalization** - Zero/near-zero vectors now handled correctly in cosine distance computation
+- **FAISS converter validation** - Added verification that recovered vector count matches expected ntotal
+
 ## [0.0.2] - 2025-12-25
 
 ### Optimized IVFFlat Implementation

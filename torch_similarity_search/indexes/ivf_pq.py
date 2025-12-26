@@ -360,9 +360,10 @@ class IVFPQIndex(BaseIndex):
         self.assignments = self.assignments[sorted_order]
 
         # Compute list sizes and offsets
-        list_sizes = torch.zeros(self._nlist, dtype=torch.int, device=device)
-        for i in range(self._nlist):
-            list_sizes[i] = (self.assignments == i).sum()
+        # Use bincount for O(n) instead of O(nlist * n) loop
+        list_sizes = torch.bincount(
+            self.assignments, minlength=self._nlist
+        ).to(dtype=torch.int, device=device)
 
         list_offsets = torch.zeros(self._nlist, dtype=torch.int, device=device)
         list_offsets[1:] = torch.cumsum(list_sizes[:-1], dim=0)

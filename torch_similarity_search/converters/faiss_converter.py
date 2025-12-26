@@ -13,15 +13,15 @@ from torch_similarity_search.indexes.ivf_pq import IVFPQIndex
 
 def from_faiss(index) -> Union[FlatIndex, IVFFlatIndex, IVFPQIndex]:
     """
-    Convert a trained FAISS index to a PyTorch module.
+    Convert a FAISS index to a PyTorch module.
 
     Supported index types:
-    - faiss.IndexFlatL2, faiss.IndexFlatIP -> FlatIndex
-    - faiss.IndexIVFFlat -> IVFFlatIndex
-    - faiss.IndexIVFPQ -> IVFPQIndex
+    - faiss.IndexFlatL2, faiss.IndexFlatIP -> FlatIndex (no training required)
+    - faiss.IndexIVFFlat -> IVFFlatIndex (must be trained)
+    - faiss.IndexIVFPQ -> IVFPQIndex (must be trained)
 
     Args:
-        index: A FAISS index
+        index: A FAISS index (trained, for IVF-based indexes)
 
     Returns:
         A PyTorch index module with the same data
@@ -143,6 +143,13 @@ def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
             f"(max ID: {indices.max()}). int32 supports up to {np.iinfo(np.int32).max}."
         )
 
+    # Verify recovered vector count matches expected ntotal
+    if vectors.shape[0] != ntotal:
+        raise ValueError(
+            f"FAISS index is inconsistent: expected {ntotal} vectors, "
+            f"but recovered {vectors.shape[0]} from inverted lists."
+        )
+
     # Sort by original index to maintain order
     sort_order = np.argsort(indices)
     vectors = vectors[sort_order]
@@ -237,6 +244,13 @@ def _convert_ivf_pq(faiss_index) -> IVFPQIndex:
         raise ValueError(
             f"FAISS index contains IDs exceeding int32 range "
             f"(max ID: {indices.max()}). int32 supports up to {np.iinfo(np.int32).max}."
+        )
+
+    # Verify recovered vector count matches expected ntotal
+    if codes.shape[0] != ntotal:
+        raise ValueError(
+            f"FAISS index is inconsistent: expected {ntotal} vectors, "
+            f"but recovered {codes.shape[0]} from inverted lists."
         )
 
     # Sort by original index to maintain order

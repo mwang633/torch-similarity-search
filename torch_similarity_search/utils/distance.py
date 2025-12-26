@@ -9,8 +9,11 @@ from torch import Tensor, nn
 def _normalize(x: Tensor, dim: int = -1) -> Tensor:
     """L2 normalize along specified dimension. Zero vectors remain zero."""
     norm = x.norm(p=2, dim=dim, keepdim=True)
-    # Zero vectors stay zero; non-zero vectors get normalized
-    return torch.where(norm > 0, x / norm.clamp(min=1e-12), x)
+    # Zero vectors stay zero; vectors with sufficiently large norm get normalized
+    # Use eps=1e-8 to avoid numerical issues with near-zero norms
+    eps = 1e-8
+    normalized = x / norm.clamp_min(1e-12)
+    return torch.where(norm > eps, normalized, x)
 
 
 class DistanceModule(nn.Module):
