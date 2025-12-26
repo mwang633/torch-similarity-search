@@ -41,7 +41,7 @@ def from_faiss(index) -> Union[FlatIndex, IVFFlatIndex, IVFPQIndex]:
     """
     index_type = type(index).__name__
 
-    if index_type in ("IndexFlatL2", "IndexFlatIP", "IndexFlat"):
+    if index_type in ("IndexFlatL2", "IndexFlatIP"):
         return _convert_flat(index)
     elif index_type == "IndexIVFFlat":
         return _convert_ivf_flat(index)
@@ -127,6 +127,11 @@ def _convert_ivf_flat(faiss_index) -> IVFFlatIndex:
         all_assignments.append(np.full(list_size, list_id, dtype=np.int32))
 
     # Concatenate all data
+    if not all_vectors:
+        # Inconsistent state: ntotal > 0 but all inverted lists are empty
+        raise ValueError(
+            "FAISS index is inconsistent: ntotal > 0 but all inverted lists are empty."
+        )
     vectors = np.concatenate(all_vectors, axis=0)
     indices = np.concatenate(all_indices, axis=0)
     assignments = np.concatenate(all_assignments, axis=0)
@@ -218,6 +223,11 @@ def _convert_ivf_pq(faiss_index) -> IVFPQIndex:
         all_assignments.append(np.full(list_size, list_id, dtype=np.int32))
 
     # Concatenate all data
+    if not all_codes:
+        # Inconsistent state: ntotal > 0 but all inverted lists are empty
+        raise ValueError(
+            "FAISS index is inconsistent: ntotal > 0 but all inverted lists are empty."
+        )
     codes = np.concatenate(all_codes, axis=0)
     indices = np.concatenate(all_indices, axis=0)
     assignments = np.concatenate(all_assignments, axis=0)

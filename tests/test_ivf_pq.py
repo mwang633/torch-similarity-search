@@ -32,6 +32,11 @@ class TestIVFPQIndex:
         with pytest.raises(ValueError, match="Unsupported metric"):
             IVFPQIndex(dim=128, nlist=10, M=8, metric="cosine")
 
+    def test_init_nbits_validation(self):
+        """Test that nbits must be <= 8."""
+        with pytest.raises(ValueError, match="nbits must be <= 8"):
+            IVFPQIndex(dim=128, nlist=10, M=8, nbits=16)
+
     def test_train(self):
         """Test index training."""
         index = IVFPQIndex(dim=64, nlist=4, M=8)

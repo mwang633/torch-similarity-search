@@ -45,6 +45,9 @@ class IVFPQIndex(BaseIndex):
         if metric not in ("l2", "ip"):
             raise ValueError(f"Unsupported metric: {metric}. IVFPQ supports 'l2' or 'ip'.")
 
+        if nbits > 8:
+            raise ValueError(f"nbits must be <= 8 (got {nbits}). Codes are stored as uint8.")
+
         super().__init__(metric=metric)
 
         if dim % M != 0:

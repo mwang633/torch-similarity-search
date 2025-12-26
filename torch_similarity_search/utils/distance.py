@@ -7,8 +7,10 @@ from torch import Tensor, nn
 
 
 def _normalize(x: Tensor, dim: int = -1) -> Tensor:
-    """L2 normalize along specified dimension."""
-    return x / x.norm(p=2, dim=dim, keepdim=True).clamp(min=1e-12)
+    """L2 normalize along specified dimension. Zero vectors remain zero."""
+    norm = x.norm(p=2, dim=dim, keepdim=True)
+    # Zero vectors stay zero; non-zero vectors get normalized
+    return torch.where(norm > 0, x / norm.clamp(min=1e-12), x)
 
 
 class DistanceModule(nn.Module):
