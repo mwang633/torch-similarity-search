@@ -706,7 +706,6 @@ name = "torch-similarity-search"
 version = "0.0.3"
 source = { editable = "." }
 dependencies = [
-    { name = "faiss-gpu-cu12" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
@@ -714,6 +713,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "faiss-gpu-cu12" },
     { name = "pip" },
     { name = "pytest" },
     { name = "ruff" },
@@ -721,13 +721,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "faiss-gpu-cu12", specifier = ">=1.13.0" },
     { name = "numpy", specifier = ">=1.20" },
     { name = "torch", specifier = ">=2.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "faiss-gpu-cu12", specifier = ">=1.13.0" },
     { name = "pip", specifier = ">=25.3" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "ruff", specifier = ">=0.14.10" },
