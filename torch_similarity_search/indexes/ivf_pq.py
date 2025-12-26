@@ -417,6 +417,11 @@ class IVFPQIndex(BaseIndex):
         # Compute residuals: (batch_size, nprobe, dim)
         residuals = queries.unsqueeze(1) - centroids
 
+        # Precompute squared norms of PQ centroids: (M, ksub)
+        # This is constant across queries so could be cached, but keeping it here
+        # for TorchScript compatibility
+        c_sq_all = (self.pq_centroids**2).sum(dim=-1)  # (M, ksub)
+
         tables = torch.zeros(
             batch_size,
             nprobe,
@@ -431,13 +436,11 @@ class IVFPQIndex(BaseIndex):
             end = start + self._dsub
             # residual_sub: (batch_size, nprobe, dsub)
             residual_sub = residuals[:, :, start:end]
-            # pq_centroids[m]: (ksub, dsub)
             # Compute squared distances: ||r - c||^2 = ||r||^2 + ||c||^2 - 2*r.c
             r_sq = (residual_sub**2).sum(dim=-1, keepdim=True)  # (B, nprobe, 1)
-            c_sq = (self.pq_centroids[m] ** 2).sum(dim=-1)  # (ksub,)
             # (batch_size, nprobe, dsub) @ (dsub, ksub) -> (batch_size, nprobe, ksub)
             rc = torch.einsum("bnd,kd->bnk", residual_sub, self.pq_centroids[m])
-            tables[:, :, m, :] = r_sq.squeeze(-1).unsqueeze(-1) + c_sq - 2 * rc
+            tables[:, :, m, :] = r_sq.squeeze(-1).unsqueeze(-1) + c_sq_all[m] - 2 * rc
 
         return tables
 

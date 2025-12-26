@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.0.3] - 2025-12-25
+## [0.0.3] - 2025-12-26
 
 ### FlatIndex + IndexFlat Converter
 
@@ -32,7 +32,7 @@
 ### Improvements
 
 - **Optimized list rebuilding** - `_rebuild_lists()` now uses `torch.bincount` for O(n) instead of O(nlist × n) complexity
-- **Robust normalization** - Zero/near-zero vectors now handled correctly in cosine distance computation
+- **Memory-efficient cosine distance** - Computes cosine similarity without allocating normalized tensor copies
 - **FAISS converter validation** - Added verification that recovered vector count matches expected ntotal
 
 ## [0.0.2] - 2025-12-25

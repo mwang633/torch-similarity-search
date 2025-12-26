@@ -268,7 +268,7 @@ class IVFFlatIndex(BaseIndex):
         )  # (batch_size, nprobe, max_list_size)
 
         # Clamp indices for safe gathering (invalid will be masked out)
-        safe_global_indices = global_indices.clamp(min=0, max=self.ntotal - 1)
+        safe_global_indices = global_indices.clamp(min=0, max=max(self.ntotal - 1, 0))
 
         # Gather vectors: (batch_size, nprobe, max_list_size, dim)
         candidate_vectors = self.vectors[safe_global_indices]
