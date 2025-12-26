@@ -370,41 +370,73 @@ class IVFPQIndex(BaseIndex):
         self.list_sizes = list_sizes
         self.list_offsets = list_offsets
 
-    def _compute_distance_tables(self, queries: Tensor) -> Tensor:
+    def _compute_distance_tables_ip(self, queries: Tensor) -> Tensor:
         """
-        Precompute distance tables for ADC (Asymmetric Distance Computation).
-
-        For each query and each subquantizer, compute the distance/similarity
-        from the query subvector to each PQ centroid.
+        Compute distance tables for IP metric (TorchScript-compatible).
 
         Args:
             queries: Query vectors of shape (batch_size, dim)
 
         Returns:
-            tables: Shape (batch_size, M, ksub) where tables[b, m, c] is the
-                   distance from query b's m-th subvector to centroid c
-                   (smaller = more similar for both L2 and IP)
+            tables: Shape (batch_size, M, ksub) - negated inner products
         """
         batch_size = queries.shape[0]
         device = queries.device
-
         tables = torch.zeros(
             batch_size, self._M, self._ksub, device=device, dtype=queries.dtype
+        )
+        for m in range(self._M):
+            start = m * self._dsub
+            end = start + self._dsub
+            query_sub = queries[:, start:end]  # (batch_size, dsub)
+            tables[:, m, :] = -torch.mm(query_sub, self.pq_centroids[m].t())
+        return tables
+
+    def _compute_distance_tables_l2(
+        self, queries: Tensor, centroids: Tensor
+    ) -> Tensor:
+        """
+        Compute distance tables for L2 metric using residuals (TorchScript-compatible).
+
+        For L2 with residual-based PQ:
+            - residual = query - centroid (for each probed centroid)
+            - Computes squared distances from residual subvectors to PQ centroids
+
+        Args:
+            queries: Query vectors of shape (batch_size, dim)
+            centroids: Probed centroids of shape (batch_size, nprobe, dim)
+
+        Returns:
+            tables: Shape (batch_size, nprobe, M, ksub)
+        """
+        batch_size = queries.shape[0]
+        nprobe = centroids.shape[1]
+        device = queries.device
+
+        # Compute residuals: (batch_size, nprobe, dim)
+        residuals = queries.unsqueeze(1) - centroids
+
+        tables = torch.zeros(
+            batch_size,
+            nprobe,
+            self._M,
+            self._ksub,
+            device=device,
+            dtype=queries.dtype,
         )
 
         for m in range(self._M):
             start = m * self._dsub
             end = start + self._dsub
-            query_sub = queries[:, start:end]  # (batch_size, dsub)
-
-            if self.distance.name == "ip":
-                # For IP: compute negated inner product (smaller = higher similarity)
-                tables[:, m, :] = -torch.mm(query_sub, self.pq_centroids[m].t())
-            else:
-                # For L2: squared distance
-                tables[:, m, :] = torch.cdist(
-                    query_sub, self.pq_centroids[m], p=2.0
-                ).pow(2)
+            # residual_sub: (batch_size, nprobe, dsub)
+            residual_sub = residuals[:, :, start:end]
+            # pq_centroids[m]: (ksub, dsub)
+            # Compute squared distances: ||r - c||^2 = ||r||^2 + ||c||^2 - 2*r.c
+            r_sq = (residual_sub**2).sum(dim=-1, keepdim=True)  # (B, nprobe, 1)
+            c_sq = (self.pq_centroids[m] ** 2).sum(dim=-1)  # (ksub,)
+            # (batch_size, nprobe, dsub) @ (dsub, ksub) -> (batch_size, nprobe, ksub)
+            rc = torch.einsum("bnd,kd->bnk", residual_sub, self.pq_centroids[m])
+            tables[:, :, m, :] = r_sq.squeeze(-1).unsqueeze(-1) + c_sq - 2 * rc
 
         return tables
 
@@ -455,45 +487,59 @@ class IVFPQIndex(BaseIndex):
         candidate_codes = self.codes[safe_global_indices]
         candidate_orig_idx = self.indices[safe_global_indices]
 
-        # Flatten for distance computation
         n_candidates = self._nprobe * max_list_size
-        candidate_codes_flat = candidate_codes.view(batch_size, n_candidates, self._M)
+
+        if self.distance.name == "ip":
+            # For IP: compute distance tables from query subvectors
+            # tables: (batch_size, M, ksub)
+            distance_tables = self._compute_distance_tables_ip(queries)
+
+            # Flatten codes: (batch_size, n_candidates, M)
+            candidate_codes_flat = candidate_codes.view(
+                batch_size, n_candidates, self._M
+            )
+
+            # Expand tables: (batch_size, n_candidates, M, ksub)
+            tables_expanded = distance_tables.unsqueeze(1).expand(
+                batch_size, n_candidates, self._M, self._ksub
+            )
+
+            # Gather and sum
+            codes_expanded = candidate_codes_flat.unsqueeze(-1).long()
+            gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
+            distances = gathered.sum(dim=-1)  # (batch_size, n_candidates)
+        else:
+            # For L2: compute distance tables from query residuals
+            # Get centroids for probed clusters: (batch_size, nprobe, dim)
+            probed_centroids = self.centroids[probe_indices]
+
+            # tables: (batch_size, nprobe, M, ksub)
+            distance_tables = self._compute_distance_tables_l2(queries, probed_centroids)
+
+            # For each candidate in each cluster, look up from that cluster's table
+            # candidate_codes: (batch_size, nprobe, max_list_size, M)
+            # We need to gather from the corresponding nprobe dimension
+
+            # Expand tables: (batch_size, nprobe, max_list_size, M, ksub)
+            tables_expanded = distance_tables.unsqueeze(2).expand(
+                batch_size, self._nprobe, max_list_size, self._M, self._ksub
+            )
+
+            # Expand codes: (batch_size, nprobe, max_list_size, M, 1)
+            codes_expanded = candidate_codes.unsqueeze(-1).long()
+
+            # Gather: -> (batch_size, nprobe, max_list_size, M)
+            gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
+
+            # Sum over M subquantizers: (batch_size, nprobe, max_list_size)
+            distances_3d = gathered.sum(dim=-1)
+
+            # Flatten: (batch_size, n_candidates)
+            distances = distances_3d.view(batch_size, n_candidates)
+
+        # Flatten other arrays
         candidate_orig_idx_flat = candidate_orig_idx.view(batch_size, n_candidates)
         valid_mask_flat = valid_mask_3d.view(batch_size, n_candidates)
-
-        # Compute residual queries (query - centroid for each probed cluster)
-        # For ADC, we need distance from (query - centroid) to the PQ reconstruction
-        # But for simplicity, we use SDC-like approach: distance from query subvector to PQ centroid
-        # Plus centroid distance adjustment
-
-        # Precompute distance tables for the queries
-        # tables[b, m, c] = ||q_b^m - pq_centroid[m, c]||^2
-        distance_tables = self._compute_distance_tables(queries)
-
-        # Compute approximate distances using table lookups
-        # For each candidate, sum up the table entries corresponding to its codes
-        # distances[b, i] = sum_m tables[b, m, codes[b, i, m]]
-
-        # Efficient batched table lookup using gather
-        # Expand tables for gathering: (batch_size, n_candidates, M, ksub)
-        tables_expanded = distance_tables.unsqueeze(1).expand(
-            batch_size, n_candidates, self._M, self._ksub
-        )
-
-        # Expand codes for gathering: (batch_size, n_candidates, M, 1)
-        codes_expanded = candidate_codes_flat.unsqueeze(-1).long()
-
-        # Gather: (batch_size, n_candidates, M, 1) -> (batch_size, n_candidates, M)
-        gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
-
-        # Sum over M subquantizers to get total distance
-        distances = gathered.sum(dim=-1)  # (batch_size, n_candidates)
-
-        # Note: For L2 with residual-based PQ, the total distance is approximately:
-        # ||q - v||^2 ≈ ||q - c||^2 + ||r_q - r_v||^2 where r_q = q - c, r_v = v - c
-        # But PQ approximates r_v, so we compute ||r_q - PQ(r_v)||^2
-        # Since we computed ||q_sub - pq_centroid||^2, this is a simplification
-        # A full implementation would compute residual-based distances
 
         # Mask invalid candidates
         distances = distances.masked_fill(~valid_mask_flat, float("inf"))
