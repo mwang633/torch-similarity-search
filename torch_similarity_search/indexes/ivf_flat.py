@@ -255,36 +255,47 @@ class IVFFlatIndex(BaseIndex):
                 return all_distances.squeeze(0), all_indices.squeeze(0)
             return all_distances, all_indices
 
-        # Build a 3D tensor of candidate indices: (batch_size, nprobe, max_list_size)
-        # Each entry [b, p, i] = global vector index for query b, probe p, local index i
-        # Use broadcasting: offset[b,p] + arange(max_list_size)
-        local_indices = torch.arange(max_list_size, device=device)  # (max_list_size,)
-        # (batch_size, nprobe, max_list_size)
-        global_indices = probed_offsets.unsqueeze(2) + local_indices.view(1, 1, -1)
-
-        # Mask for valid entries: local_idx < list_size[b, p]
-        valid_mask_3d = local_indices.view(1, 1, -1) < probed_sizes.unsqueeze(
-            2
-        )  # (batch_size, nprobe, max_list_size)
-
-        # Clamp indices for safe gathering (invalid will be masked out)
-        safe_global_indices = global_indices.clamp(min=0, max=max(self.ntotal - 1, 0))
-
-        # Gather vectors: (batch_size, nprobe, max_list_size, dim)
-        candidate_vectors = self.vectors[safe_global_indices]
-
-        # Gather original indices: (batch_size, nprobe, max_list_size)
-        candidate_orig_idx = self.indices[safe_global_indices]
-
-        # Reshape for batch distance computation
-        # (batch_size, nprobe * max_list_size, dim)
+        # Memory-efficient search: process one probe at a time to avoid
+        # allocating (batch_size, nprobe, max_list_size, dim) tensor
         n_candidates = self._nprobe * max_list_size
-        candidate_vectors_flat = candidate_vectors.view(batch_size, n_candidates, -1)
-        candidate_orig_idx_flat = candidate_orig_idx.view(batch_size, n_candidates)
-        valid_mask_flat = valid_mask_3d.view(batch_size, n_candidates)
+        local_indices = torch.arange(max_list_size, device=device)
 
-        # Compute distances: (batch_size, n_candidates)
-        distances = self.distance.batched(queries, candidate_vectors_flat)
+        # Allocate output tensors
+        distances = torch.zeros(batch_size, n_candidates, device=device)
+        candidate_orig_idx_flat = torch.zeros(
+            batch_size, n_candidates, dtype=torch.int, device=device
+        )
+        valid_mask_flat = torch.zeros(
+            batch_size, n_candidates, dtype=torch.bool, device=device
+        )
+
+        for p in range(self._nprobe):
+            # Indices for this probe
+            start_idx = p * max_list_size
+            end_idx = start_idx + max_list_size
+
+            # Global indices for this probe: (batch_size, max_list_size)
+            global_indices_p = probed_offsets[:, p : p + 1] + local_indices.view(1, -1)
+            safe_global_indices_p = global_indices_p.clamp(
+                min=0, max=max(self.ntotal - 1, 0)
+            )
+
+            # Valid mask for this probe: (batch_size, max_list_size)
+            valid_mask_p = local_indices.view(1, -1) < probed_sizes[:, p : p + 1]
+
+            # Gather vectors for this probe: (batch_size, max_list_size, dim)
+            candidate_vectors_p = self.vectors[safe_global_indices_p]
+
+            # Gather original indices: (batch_size, max_list_size)
+            candidate_orig_idx_p = self.indices[safe_global_indices_p]
+
+            # Compute distances for this probe: (batch_size, max_list_size)
+            distances_p = self.distance.batched(queries, candidate_vectors_p)
+
+            # Store results
+            distances[:, start_idx:end_idx] = distances_p
+            candidate_orig_idx_flat[:, start_idx:end_idx] = candidate_orig_idx_p
+            valid_mask_flat[:, start_idx:end_idx] = valid_mask_p
 
         # Mask invalid candidates with infinity
         distances = distances.masked_fill(~valid_mask_flat, float("inf"))

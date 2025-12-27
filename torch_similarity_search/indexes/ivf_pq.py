@@ -500,36 +500,33 @@ class IVFPQIndex(BaseIndex):
             # tables: (batch_size, M, ksub)
             distance_tables = self._compute_distance_tables_ip(queries)
 
-            # Flatten codes: (batch_size, n_candidates, M)
-            candidate_codes_flat = candidate_codes.view(
-                batch_size, n_candidates, self._M
-            )
-
-            # Expand tables: (batch_size, n_candidates, M, ksub)
-            tables_expanded = distance_tables.unsqueeze(1).expand(
-                batch_size, n_candidates, self._M, self._ksub
-            )
-
-            # Gather and sum PQ distances
-            codes_expanded = candidate_codes_flat.unsqueeze(-1).long()
-            gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
-            pq_distances = gathered.sum(dim=-1)  # (batch_size, n_candidates)
-
-            # Add coarse IP term: IP(query, centroid) for each candidate's cluster
+            # Compute coarse IP term for each probed cluster
             # probed_centroids: (batch_size, nprobe, dim)
             probed_centroids = self.centroids[probe_indices]
             # coarse_ip: (batch_size, nprobe) - negated inner product (smaller = better)
             coarse_ip = -torch.bmm(
                 queries.unsqueeze(1), probed_centroids.transpose(1, 2)
             ).squeeze(1)
-            # Expand to (batch_size, nprobe, max_list_size) then flatten
-            coarse_ip_expanded = coarse_ip.unsqueeze(2).expand(
-                batch_size, self._nprobe, max_list_size
-            )
-            coarse_ip_flat = coarse_ip_expanded.reshape(batch_size, n_candidates)
 
-            # Total distance = coarse_ip + pq_distances
-            distances = coarse_ip_flat + pq_distances
+            # Memory-efficient distance computation: process one probe at a time
+            # to avoid expanding to (batch_size, n_candidates, M, ksub)
+            distances_3d = torch.zeros(
+                batch_size, self._nprobe, max_list_size, device=device
+            )
+            for p in range(self._nprobe):
+                # codes for this probe: (batch_size, max_list_size, M)
+                codes_p = candidate_codes[:, p, :, :].long()
+                # Expand tables: (batch_size, max_list_size, M, ksub)
+                tables_exp = distance_tables.unsqueeze(1).expand(
+                    batch_size, max_list_size, self._M, self._ksub
+                )
+                # Gather: (batch_size, max_list_size, M)
+                gathered = tables_exp.gather(-1, codes_p.unsqueeze(-1)).squeeze(-1)
+                # Sum over M and add coarse IP: (batch_size, max_list_size)
+                distances_3d[:, p, :] = gathered.sum(dim=-1) + coarse_ip[:, p : p + 1]
+
+            # Flatten: (batch_size, n_candidates)
+            distances = distances_3d.view(batch_size, n_candidates)
         else:
             # For L2: compute distance tables from query residuals
             # Get centroids for probed clusters: (batch_size, nprobe, dim)
@@ -540,23 +537,24 @@ class IVFPQIndex(BaseIndex):
                 queries, probed_centroids
             )
 
-            # For each candidate in each cluster, look up from that cluster's table
-            # candidate_codes: (batch_size, nprobe, max_list_size, M)
-            # We need to gather from the corresponding nprobe dimension
-
-            # Expand tables: (batch_size, nprobe, max_list_size, M, ksub)
-            tables_expanded = distance_tables.unsqueeze(2).expand(
-                batch_size, self._nprobe, max_list_size, self._M, self._ksub
+            # Memory-efficient distance computation: process one probe at a time
+            # to avoid expanding to (batch_size, nprobe, max_list_size, M, ksub)
+            distances_3d = torch.zeros(
+                batch_size, self._nprobe, max_list_size, device=device
             )
-
-            # Expand codes: (batch_size, nprobe, max_list_size, M, 1)
-            codes_expanded = candidate_codes.unsqueeze(-1).long()
-
-            # Gather: -> (batch_size, nprobe, max_list_size, M)
-            gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
-
-            # Sum over M subquantizers: (batch_size, nprobe, max_list_size)
-            distances_3d = gathered.sum(dim=-1)
+            for p in range(self._nprobe):
+                # tables for this probe: (batch_size, M, ksub)
+                tables_p = distance_tables[:, p, :, :]
+                # codes for this probe: (batch_size, max_list_size, M)
+                codes_p = candidate_codes[:, p, :, :].long()
+                # Expand tables: (batch_size, max_list_size, M, ksub)
+                tables_exp = tables_p.unsqueeze(1).expand(
+                    batch_size, max_list_size, self._M, self._ksub
+                )
+                # Gather: (batch_size, max_list_size, M)
+                gathered = tables_exp.gather(-1, codes_p.unsqueeze(-1)).squeeze(-1)
+                # Sum over M: (batch_size, max_list_size)
+                distances_3d[:, p, :] = gathered.sum(dim=-1)
 
             # Flatten: (batch_size, n_candidates)
             distances = distances_3d.view(batch_size, n_candidates)

@@ -1,13 +1,17 @@
 # Changelog
 
+## [0.0.5] - 2025-12-26
+
+### Improvements
+
+- **IVFFlat memory-efficient search** - Search now processes one probe at a time, reducing peak memory usage from O(batch × nprobe × max_list_size × dim) to O(batch × max_list_size × dim). Fixes OOM errors with high nprobe values.
+- **IVFPQ memory-efficient search** - Both L2 and IP distance computation now process one probe at a time, reducing peak memory usage from O(batch × nprobe × max_list_size × M × ksub) to O(batch × max_list_size × M × ksub). Fixes OOM errors with high nprobe values.
+
 ## [0.0.4] - 2025-12-26
 
 ### Bug Fixes
 
 - **IVFPQ IP metric fix** - Fixed missing coarse centroid term in inner product distance computation. The total IP distance now correctly includes both the coarse quantizer term (`-IP(query, centroid)`) and the PQ term (`-IP(query_subvec, pq_centroid)`).
-
-### Improvements
-
 - **Epsilon as instance attribute** - `DistanceModule._eps` is now an instance attribute for TorchScript compatibility
 - **Python 3.13 support** - Added Python 3.13 to CI test matrix
 - **IVFPQ benchmark script** - New `benchmarks/benchmark_ivfpq.py` for comparing PyTorch vs FAISS performance
