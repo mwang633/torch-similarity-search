@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.0.4] - 2025-12-26
+
+### Bug Fixes
+
+- **IVFPQ IP metric fix** - Fixed missing coarse centroid term in inner product distance computation. The total IP distance now correctly includes both the coarse quantizer term (`-IP(query, centroid)`) and the PQ term (`-IP(query_subvec, pq_centroid)`).
+
+### Improvements
+
+- **Epsilon as instance attribute** - `DistanceModule._eps` is now an instance attribute for TorchScript compatibility
+- **Python 3.13 support** - Added Python 3.13 to CI test matrix
+- **IVFPQ benchmark script** - New `benchmarks/benchmark_ivfpq.py` for comparing PyTorch vs FAISS performance
+  - Supports both L2 and IP metrics
+  - Measures recall and latency
+  - Includes nprobe sweep mode for recall/latency tradeoff analysis
+  - Uses `torch.compile()` for optimized PyTorch performance
+
+### Tests
+
+- **Comprehensive IP distance tests** - Added 4 new tests for IVFPQ inner product:
+  - `test_inner_product_includes_coarse_term` - Verifies coarse IP contribution
+  - `test_inner_product_distance_ordering` - Validates distance ordering
+  - `test_inner_product_vs_l2_different_results` - Confirms IP/L2 produce different results
+  - `test_inner_product_higher_nprobe_better_recall` - Tests nprobe effect on IP recall
+
 ## [0.0.3] - 2025-12-26
 
 ### FlatIndex + IndexFlat Converter

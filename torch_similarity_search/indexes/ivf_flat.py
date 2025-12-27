@@ -207,9 +207,9 @@ class IVFFlatIndex(BaseIndex):
 
         # Compute list sizes and offsets (int32 for GPU efficiency)
         # Use bincount for O(n) instead of O(nlist * n) loop
-        list_sizes = torch.bincount(
-            self.assignments, minlength=self._nlist
-        ).to(dtype=torch.int, device=device)
+        list_sizes = torch.bincount(self.assignments, minlength=self._nlist).to(
+            dtype=torch.int, device=device
+        )
 
         list_offsets = torch.zeros(self._nlist, dtype=torch.int, device=device)
         list_offsets[1:] = torch.cumsum(list_sizes[:-1], dim=0)

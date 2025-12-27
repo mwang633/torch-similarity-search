@@ -43,10 +43,14 @@ class IVFPQIndex(BaseIndex):
         k: int = 10,
     ):
         if metric not in ("l2", "ip"):
-            raise ValueError(f"Unsupported metric: {metric}. IVFPQ supports 'l2' or 'ip'.")
+            raise ValueError(
+                f"Unsupported metric: {metric}. IVFPQ supports 'l2' or 'ip'."
+            )
 
         if nbits > 8:
-            raise ValueError(f"nbits must be <= 8 (got {nbits}). Codes are stored as uint8.")
+            raise ValueError(
+                f"nbits must be <= 8 (got {nbits}). Codes are stored as uint8."
+            )
 
         super().__init__(metric=metric)
 
@@ -361,9 +365,9 @@ class IVFPQIndex(BaseIndex):
 
         # Compute list sizes and offsets
         # Use bincount for O(n) instead of O(nlist * n) loop
-        list_sizes = torch.bincount(
-            self.assignments, minlength=self._nlist
-        ).to(dtype=torch.int, device=device)
+        list_sizes = torch.bincount(self.assignments, minlength=self._nlist).to(
+            dtype=torch.int, device=device
+        )
 
         list_offsets = torch.zeros(self._nlist, dtype=torch.int, device=device)
         list_offsets[1:] = torch.cumsum(list_sizes[:-1], dim=0)
@@ -393,9 +397,7 @@ class IVFPQIndex(BaseIndex):
             tables[:, m, :] = -torch.mm(query_sub, self.pq_centroids[m].t())
         return tables
 
-    def _compute_distance_tables_l2(
-        self, queries: Tensor, centroids: Tensor
-    ) -> Tensor:
+    def _compute_distance_tables_l2(self, queries: Tensor, centroids: Tensor) -> Tensor:
         """
         Compute distance tables for L2 metric using residuals (TorchScript-compatible).
 
@@ -508,17 +510,35 @@ class IVFPQIndex(BaseIndex):
                 batch_size, n_candidates, self._M, self._ksub
             )
 
-            # Gather and sum
+            # Gather and sum PQ distances
             codes_expanded = candidate_codes_flat.unsqueeze(-1).long()
             gathered = tables_expanded.gather(-1, codes_expanded).squeeze(-1)
-            distances = gathered.sum(dim=-1)  # (batch_size, n_candidates)
+            pq_distances = gathered.sum(dim=-1)  # (batch_size, n_candidates)
+
+            # Add coarse IP term: IP(query, centroid) for each candidate's cluster
+            # probed_centroids: (batch_size, nprobe, dim)
+            probed_centroids = self.centroids[probe_indices]
+            # coarse_ip: (batch_size, nprobe) - negated inner product (smaller = better)
+            coarse_ip = -torch.bmm(
+                queries.unsqueeze(1), probed_centroids.transpose(1, 2)
+            ).squeeze(1)
+            # Expand to (batch_size, nprobe, max_list_size) then flatten
+            coarse_ip_expanded = coarse_ip.unsqueeze(2).expand(
+                batch_size, self._nprobe, max_list_size
+            )
+            coarse_ip_flat = coarse_ip_expanded.reshape(batch_size, n_candidates)
+
+            # Total distance = coarse_ip + pq_distances
+            distances = coarse_ip_flat + pq_distances
         else:
             # For L2: compute distance tables from query residuals
             # Get centroids for probed clusters: (batch_size, nprobe, dim)
             probed_centroids = self.centroids[probe_indices]
 
             # tables: (batch_size, nprobe, M, ksub)
-            distance_tables = self._compute_distance_tables_l2(queries, probed_centroids)
+            distance_tables = self._compute_distance_tables_l2(
+                queries, probed_centroids
+            )
 
             # For each candidate in each cluster, look up from that cluster's table
             # candidate_codes: (batch_size, nprobe, max_list_size, M)

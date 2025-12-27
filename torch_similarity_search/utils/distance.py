@@ -72,8 +72,12 @@ class DistanceModule(nn.Module):
         elif self._metric == "cosine":
             # Compute cosine distance without allocating normalized copies:
             # cos_sim = (q @ c.T) / (||q|| * ||c||)
-            q_norm = queries.norm(p=2, dim=1, keepdim=True).clamp_min(self._eps)  # (batch, 1)
-            c_norm = candidates.norm(p=2, dim=2, keepdim=True).clamp_min(self._eps)  # (batch, n, 1)
+            q_norm = queries.norm(p=2, dim=1, keepdim=True).clamp_min(
+                self._eps
+            )  # (batch, 1)
+            c_norm = candidates.norm(p=2, dim=2, keepdim=True).clamp_min(
+                self._eps
+            )  # (batch, n, 1)
             # (batch, 1, dim) @ (batch, dim, n) -> (batch, 1, n) -> (batch, n)
             dot = torch.bmm(queries.unsqueeze(1), candidates.transpose(1, 2)).squeeze(1)
             cos_sim = dot / (q_norm * c_norm.squeeze(2))

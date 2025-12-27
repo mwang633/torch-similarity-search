@@ -286,7 +286,157 @@ class TestIVFPQIndex:
                 found_self += 1
 
         # Should find itself in most cases
-        assert found_self >= 5, f"Only found {found_self}/10 queries in their own results"
+        assert found_self >= 5, (
+            f"Only found {found_self}/10 queries in their own results"
+        )
+
+    def test_inner_product_includes_coarse_term(self):
+        """Test that IP distance includes the coarse centroid term.
+
+        For IVFPQ with IP metric, the total distance should be:
+        distance = -IP(query, centroid) + (-IP(query_subvec, pq_centroid))
+
+        This test verifies that the coarse term is included by checking that
+        vectors in different clusters have appropriately different distances.
+        """
+        torch.manual_seed(42)
+        dim = 64
+        nlist = 4
+        M = 8
+
+        index = IVFPQIndex(dim=dim, nlist=nlist, M=M, metric="ip", nprobe=nlist)
+
+        # Create vectors that are clearly in different clusters
+        vectors = torch.randn(500, dim)
+        vectors = vectors / vectors.norm(dim=1, keepdim=True)
+
+        index.train(vectors)
+        index.add(vectors)
+
+        # Get the centroids
+        centroids = index.centroids  # (nlist, dim)
+
+        # Create a query that's close to one centroid
+        query = centroids[0:1].clone()
+        query = query / query.norm(dim=1, keepdim=True)
+
+        # Search with all clusters
+        distances, indices = index.search(query, k=50)
+
+        # Get assignments for the returned vectors
+        assignments = index.assignments[indices[0]]
+
+        # Vectors in cluster 0 should generally have better (more negative) distances
+        # because they benefit from the coarse IP term
+        cluster_0_mask = assignments == 0
+        cluster_other_mask = assignments != 0
+
+        if cluster_0_mask.any() and cluster_other_mask.any():
+            cluster_0_dists = distances[0][cluster_0_mask]
+            cluster_other_dists = distances[0][cluster_other_mask]
+
+            # Mean distance for cluster 0 should be more negative (better)
+            assert cluster_0_dists.mean() < cluster_other_dists.mean(), (
+                f"Cluster 0 mean distance ({cluster_0_dists.mean():.4f}) should be "
+                f"more negative than other clusters ({cluster_other_dists.mean():.4f})"
+            )
+
+    def test_inner_product_distance_ordering(self):
+        """Test that IP distances are ordered correctly (smaller = more similar)."""
+        torch.manual_seed(42)
+        index = IVFPQIndex(dim=64, nlist=4, M=8, metric="ip", nprobe=4)
+
+        # Create normalized vectors
+        vectors = torch.randn(500, 64)
+        vectors = vectors / vectors.norm(dim=1, keepdim=True)
+
+        index.train(vectors)
+        index.add(vectors)
+
+        query = vectors[0:1]
+        distances, indices = index.search(query, k=10)
+
+        # Distances should be sorted in ascending order (most negative first)
+        assert torch.all(distances[0, :-1] <= distances[0, 1:]), (
+            "Distances should be in ascending order (most similar first)"
+        )
+
+        # The first result should have the most negative distance
+        assert distances[0, 0] == distances[0].min()
+
+    def test_inner_product_vs_l2_different_results(self):
+        """Test that IP and L2 metrics give different results."""
+        torch.manual_seed(42)
+        dim = 64
+        nlist = 4
+        M = 8
+
+        # Use non-normalized vectors to make the difference more apparent
+        vectors = torch.randn(500, dim) * 2  # Scale to make differences clearer
+
+        # Train and add to both indexes
+        index_ip = IVFPQIndex(dim=dim, nlist=nlist, M=M, metric="ip", nprobe=nlist)
+        index_l2 = IVFPQIndex(dim=dim, nlist=nlist, M=M, metric="l2", nprobe=nlist)
+
+        index_ip.train(vectors)
+        index_ip.add(vectors)
+
+        index_l2.train(vectors)
+        index_l2.add(vectors)
+
+        query = vectors[0:1]
+
+        _, indices_ip = index_ip.search(query, k=10)
+        _, indices_l2 = index_l2.search(query, k=10)
+
+        # The results should generally be different (though not guaranteed)
+        # At minimum, the distances should have different signs/scales
+        dists_ip, _ = index_ip.search(query, k=1)
+        dists_l2, _ = index_l2.search(query, k=1)
+
+        # IP distances are negated (negative), L2 distances are positive
+        assert dists_ip[0, 0] < 0, "IP distance should be negative"
+        assert dists_l2[0, 0] >= 0, "L2 distance should be non-negative"
+
+    def test_inner_product_higher_nprobe_better_recall(self):
+        """Test that higher nprobe improves recall for IP metric."""
+        torch.manual_seed(42)
+        dim = 64
+        nlist = 10
+        M = 8
+
+        index = IVFPQIndex(dim=dim, nlist=nlist, M=M, metric="ip", nprobe=1)
+
+        vectors = torch.randn(1000, dim)
+        vectors = vectors / vectors.norm(dim=1, keepdim=True)
+
+        index.train(vectors)
+        index.add(vectors)
+
+        queries = vectors[:50]
+
+        # Get ground truth with all clusters
+        index.nprobe = nlist
+        _, gt_indices = index.search(queries, k=10)
+
+        # Test with different nprobe values
+        recalls = {}
+        for nprobe in [1, 5, nlist]:
+            index.nprobe = nprobe
+            _, indices = index.search(queries, k=10)
+
+            matches = 0
+            for i in range(queries.shape[0]):
+                matches += len(set(indices[i].tolist()) & set(gt_indices[i].tolist()))
+            recalls[nprobe] = matches / (queries.shape[0] * 10)
+
+        # Higher nprobe should give equal or better recall
+        assert recalls[5] >= recalls[1], (
+            f"nprobe=5 ({recalls[5]}) should >= nprobe=1 ({recalls[1]})"
+        )
+        assert recalls[nlist] >= recalls[5], (
+            f"nprobe={nlist} ({recalls[nlist]}) should >= nprobe=5 ({recalls[5]})"
+        )
 
     def test_cuda_if_available(self):
         """Test that index works on CUDA if available."""

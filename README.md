@@ -3,6 +3,7 @@
 [![PyPI version](https://badge.fury.io/py/torch-similarity-search.svg)](https://pypi.org/project/torch-similarity-search/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub](https://img.shields.io/badge/GitHub-repo-blue?logo=github)](https://github.com/mwang633/torch-similarity-search)
 
 PyTorch-native similarity search. Convert trained FAISS indexes to pure `nn.Module` models for GPU inference.
 
